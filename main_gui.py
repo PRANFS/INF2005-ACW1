@@ -662,7 +662,7 @@ class StegApp(TkinterDnD.Tk):
     def run_decode(self):
         stego_path = filedialog.askopenfilename(
             title="Select Stego-Image", 
-            filetypes=[("PNG files", "*.png")]
+            filetypes=[("Image files", "*.png *.bmp *.jpg *.jpeg *.gif")]
         )
         if not stego_path:
             return

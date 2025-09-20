@@ -58,6 +58,40 @@ class DropZone(tk.Frame):
         self.label.configure(bg=self.default_bg)
 
 
+class InputDialog(simpledialog.Dialog):
+    def __init__(self, parent, title, is_image=True):
+        self.is_image = is_image
+        super().__init__(parent, title)
+
+    def body(self, master):
+        tk.Label(master, text="Secret Key:").grid(row=0, column=0)
+        self.key_entry = tk.Entry(master, show="*")
+        self.key_entry.grid(row=0, column=1)
+
+        tk.Label(master, text="Number of LSBs (1-8):").grid(row=1, column=0)
+        self.lsb_entry = tk.Entry(master)
+        self.lsb_entry.grid(row=1, column=1)
+
+        return self.key_entry  # initial focus
+
+    def apply(self):
+        key = self.key_entry.get()
+        lsb_str = self.lsb_entry.get()
+        if not key.isdigit():
+            messagebox.showerror("Error", "Secret key must be numeric.")
+            self.result = None
+            return
+        try:
+            num_lsbs = int(lsb_str)
+            if not 1 <= num_lsbs <= 8:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Error", "LSBs must be an integer between 1 and 8.")
+            self.result = None
+            return
+        self.result = (key, num_lsbs)
+
+
 class StegApp(TkinterDnD.Tk):
     def __init__(self):
         super().__init__()
@@ -485,20 +519,20 @@ class StegApp(TkinterDnD.Tk):
         if not stego_path:
             return
             
-        key = simpledialog.askstring("Input", "Enter the Secret Key:", show='*')
-        if not key or not key.isdigit():
-            messagebox.showerror("Error", "A valid numeric key is required for decoding.")
+        dialog = InputDialog(self, "Enter Decode Parameters")
+        if dialog.result is None:
             return
+        key, num_lsbs = dialog.result
             
         try:
-            extracted_path = self._decode_audio(stego_path, int(key), self.audio_num_lsbs.get())
+            extracted_path = self._decode_audio(stego_path, int(key), num_lsbs)
             
             # Update decode result display
             result_text = f"✅ Payload extracted successfully!\n\n"
             result_text += f"📁 Extracted file: {extracted_path}\n"
             result_text += f"📊 File size: {os.path.getsize(extracted_path)} bytes\n"
             result_text += f"🔑 Key used: {key}\n"
-            result_text += f"⚙️ LSBs used: {self.audio_num_lsbs.get()}\n"
+            result_text += f"⚙️ LSBs used: {num_lsbs}\n"
             
             self.audio_decode_result.delete(1.0, tk.END)
             self.audio_decode_result.insert(1.0, result_text)
@@ -667,20 +701,20 @@ class StegApp(TkinterDnD.Tk):
         if not stego_path:
             return
             
-        key = simpledialog.askstring("Input", "Enter the Secret Key:", show='*')
-        if not key or not key.isdigit():
-            messagebox.showerror("Error", "A valid numeric key is required for decoding.")
+        dialog = InputDialog(self, "Enter Decode Parameters")
+        if dialog.result is None:
             return
+        key, num_lsbs = dialog.result
             
         try:
-            extracted_path = self._decode_image(stego_path, int(key), self.num_lsbs.get())
+            extracted_path = self._decode_image(stego_path, int(key), num_lsbs)
             
             # Update decode result display
             result_text = f"✅ Payload extracted successfully!\n\n"
             result_text += f"📁 Extracted file: {extracted_path}\n"
             result_text += f"📊 File size: {os.path.getsize(extracted_path)} bytes\n"
             result_text += f"🔑 Key used: {key}\n"
-            result_text += f"⚙️ LSBs used: {self.num_lsbs.get()}\n"
+            result_text += f"⚙️ LSBs used: {num_lsbs}\n"
             
             self.decode_result.delete(1.0, tk.END)
             self.decode_result.insert(1.0, result_text)

@@ -330,7 +330,7 @@ class StegApp(TkinterDnD.Tk):
         tk.Label(lsb_frame, text="Number of LSBs:", 
                 font=('Helvetica', 10, 'bold'), bg='#f5f5f5').pack(side=tk.LEFT)
         
-        audio_lsb_slider = Scale(lsb_frame, from_=1, to=4, orient=HORIZONTAL, 
+        audio_lsb_slider = Scale(lsb_frame, from_=1, to=8, orient=HORIZONTAL, 
                                 variable=self.audio_num_lsbs, command=self.update_audio_capacity_display,
                                 bg='#f5f5f5', font=('Helvetica', 9))
         audio_lsb_slider.pack(side=tk.LEFT, padx=10)
@@ -755,21 +755,19 @@ class StegApp(TkinterDnD.Tk):
             audio_data = np.frombuffer(frames, dtype=np.uint8).copy()
             max_val, min_val = 255, 0
         elif params.sampwidth == 2:
-            audio_data = np.frombuffer(frames, dtype=np.int16).copy()
-            max_val, min_val = 32767, -32768
+            audio_data = np.frombuffer(frames, dtype=np.uint16).copy()
+            max_val, min_val = 65535, 0
         elif params.sampwidth == 3:
             # 24-bit PCM → unpack into int32
             raw = np.frombuffer(frames, dtype=np.uint8).reshape(-1, 3)
             audio_data = (
-                raw[:, 0].astype(np.int32)
-                | (raw[:, 1].astype(np.int32) << 8)
-                | (raw[:, 2].astype(np.int32) << 16)
+                raw[:, 0].astype(np.uint32)
+                | (raw[:, 1].astype(np.uint32) << 8)
+                | (raw[:, 2].astype(np.uint32) << 16)
             )
-            # Adjust signed 24-bit
-            audio_data = np.where(
-                audio_data >= (1 << 23), audio_data - (1 << 24), audio_data
-            ).astype(np.int32)
-            max_val, min_val = (1 << 23) - 1, -(1 << 23)
+            # Adjust for unsigned 24-bit
+            audio_data = audio_data & 0xFFFFFF
+            max_val, min_val = 16777215, 0
         else:
             raise ValueError("Unsupported sample width. Only 8, 16, and 24-bit audio supported.")
 
@@ -796,7 +794,7 @@ class StegApp(TkinterDnD.Tk):
 
             # Take next chunk of bits
             chunk = bit_stream[bit_index : bit_index + num_lsbs]
-            bits_to_embed = int(chunk.to01(), 2)
+            bits_to_embed = int(chunk.to01().ljust(num_lsbs, '0'), 2)
 
             # Modify sample
             original_sample = int(audio_data[sample_idx])
@@ -839,19 +837,17 @@ class StegApp(TkinterDnD.Tk):
             audio_data = np.frombuffer(frames, dtype=np.uint8)
             max_val = 0xFF
         elif params.sampwidth == 2:
-            audio_data = np.frombuffer(frames, dtype=np.int16)
+            audio_data = np.frombuffer(frames, dtype=np.uint16)
             max_val = 0xFFFF
         elif params.sampwidth == 3:
             # 24-bit PCM → convert to int32
             raw = np.frombuffer(frames, dtype=np.uint8).reshape(-1, 3)
             # Little-endian assembly
-            audio_data = (raw[:, 0].astype(np.int32) |
-                        (raw[:, 1].astype(np.int32) << 8) |
-                        (raw[:, 2].astype(np.int32) << 16))
-            # Adjust for signed values
-            audio_data = np.where(audio_data >= (1 << 23),
-                                audio_data - (1 << 24),
-                                audio_data)
+            audio_data = (raw[:, 0].astype(np.uint32) |
+                        (raw[:, 1].astype(np.uint32) << 8) |
+                        (raw[:, 2].astype(np.uint32) << 16))
+            # Adjust for unsigned values
+            audio_data = audio_data & 0xFFFFFF
             max_val = 0xFFFFFF
         else:
             raise ValueError("Unsupported sample width. Only 8, 16, and 24-bit audio supported.")

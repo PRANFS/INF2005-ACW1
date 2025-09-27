@@ -1983,77 +1983,86 @@ class StegApp(TkinterDnD.Tk):
             return
 
         try:
-            # Load samples
-            params, samples = self._wav_read_any(path)  # (N,C)
+            # ---- load suspected stego ----
+            params, samples = self._wav_read_any(path)   # (N, C) int array (8/16/24-bit handled)
             N, C = samples.shape
-            lsbs = max(1, min(int(self.an_audio_lsbs.get()), 8))
 
-            # Main metrics for chosen LSBs
-            chi_p_overall, chi_p_ch = self._chi_square_lsb_audio(samples, lsbs)
-            corr_overall, corr_ch = self._neighbor_corr_audio(samples)
-            lsb_ratio_overall, lsb_ratio_ch = self._lsb_ratio_audio(samples, lsbs)
-            lsb_var_series = self._lsb_block_variance_1d(samples, lsbs, block=2048)
+            # ---- choose bit-plane from slider (1..8 on UI ⇒ 0..7 bit index) ----
+            k = max(0, min(int(self.an_audio_lsbs.get()) - 1, 7))
+
+            # ---- headline metrics on selected bit-plane k ----
+            chi_p_overall, chi_p_ch = self._chi_square_lsb_audio(samples, k)
+            corr_overall, corr_ch   = self._neighbor_corr_audio(samples)  # plane-independent
+            lsb_ratio_overall, lsb_ratio_ch = self._lsb_ratio_audio(samples, k)
+            lsb_var_series = self._lsb_block_variance_1d(samples, k, block=2048)
             lsb_var_mean = float(lsb_var_series.mean()) if lsb_var_series.size else 0.0
 
-            # Optional difference image
+            # ---- auto-detect most likely bit depth (scan 1..8 → bit_index 0..7) ----
+            autodet_rows = []
+            best = None
+            for d in range(1, 9):
+                kk = d - 1
+                chi_p_o, _ = self._chi_square_lsb_audio(samples, kk)
+                _, corr_ch_tmp = self._neighbor_corr_audio(samples)
+                corr_o = float(np.mean(corr_ch_tmp)) if corr_ch_tmp else 0.0
+                lsb_ratio_o, _ = self._lsb_ratio_audio(samples, kk)
+                series = self._lsb_block_variance_1d(samples, kk, block=2048)
+                var_mean = float(series.mean()) if series.size else 0.0
+                score = float(self._score_stegoish(chi_p_o, corr_o, lsb_ratio_o, var_mean))
+                row = {
+                    "lsbs": d, "score": score,
+                    "chi_p": float(chi_p_o),
+                    "corr": float(corr_o),
+                    "lsb_ratio": float(lsb_ratio_o),
+                    "var": float(var_mean),
+                }
+                autodet_rows.append(row)
+                if (best is None) or (row["score"] > best["score"]):
+                    best = row
+
+            # ---- optional difference view with original cover ----
             diff_img = None
             cover_path = self.an_audio_cover_hint.get().strip()
             if cover_path and os.path.exists(cover_path):
                 _, cover_samples = self._wav_read_any(cover_path)
                 diff_img = self._render_audio_diff(cover_samples, samples)
 
-            # Visuals
+            # ---- visuals (wave + quick spectrogram + bar for variance series) ----
             wave_img = self._render_waveform(samples)
-            spec_img = self._render_spectrogram(samples[:,0])
+            spec_img = self._render_spectrogram(samples[:, 0])  # first channel quick look
             lsbvar_img = self._render_lsb_var_bar(lsb_var_series)
 
-            # -------- Auto-detect 1..4 LSBs --------
-            autodet = []
-            for d in range(1, min(lsbs, 8) + 1):
-                chi_p_o, _ = self._chi_square_lsb_audio(samples, d)
-                _, corr_ch_tmp = self._neighbor_corr_audio(samples)
-                corr_o = float(np.mean(corr_ch_tmp)) if corr_ch_tmp else 0.0
-                lsb_ratio_o, _ = self._lsb_ratio_audio(samples, d)
-                series = self._lsb_block_variance_1d(samples, d, block=2048)
-                var_mean = float(series.mean()) if series.size else 0.0
-                score = self._score_stegoish(chi_p_o, corr_o, lsb_ratio_o, var_mean)
-                autodet.append({
-                    "lsbs": d,
-                    "chi_p": float(chi_p_o),
-                    "corr": float(corr_o),
-                    "lsb_ratio": float(lsb_ratio_o),
-                    "lsb_var_mean": float(var_mean),
-                    "score": float(score),
-                })
-            best = max(autodet, key=lambda z: z["score"]) if autodet else None
-
-            # Report text
+            # ---- report text ----
             sr = params.framerate
             dur = N / float(sr) if sr else 0.0
-            rep = []
-            rep.append("Audio Steganalysis Report")
-            rep.append("--------------------------")
-            rep.append(f"File: {os.path.basename(path)}  |  {sr} Hz, {params.nchannels} ch, {8*params.sampwidth}-bit, {dur:.2f}s")
-            rep.append(f"Assumed analysis LSBs: {lsbs}")
-            rep.append("")
-            rep.append(f"Chi-square LSB p-value (overall): {chi_p_overall:.4f}")
-            for c in range(C): rep.append(f"  - ch{c+1}: {chi_p_ch[c]:.4f}")
-            rep.append(f"Neighbor correlation (overall): {corr_overall:.4f}")
-            for c in range(C): rep.append(f"  - ch{c+1}: {corr_ch[c]:.4f}")
-            rep.append(f"LSB ones-ratio (overall): {lsb_ratio_overall:.4f}")
-            for c in range(C): rep.append(f"  - ch{c+1}: {lsb_ratio_ch[c]:{'.4f'}}")
-            rep.append(f"Mean LSB variance (blocks): {lsb_var_mean:.4f}")
-            rep.append("")
-            rep.append("Auto-detect (scan LSB=1..4): higher score = more 'stego-ish'")
-            for row in autodet:
-                rep.append(f"  LSBs={row['lsbs']}: score={row['score']:.3f} | chi_p={row['chi_p']:.4f} corr={row['corr']:.4f} lsb_ratio={row['lsb_ratio']:.4f} var={row['lsb_var_mean']:.4f}")
+            lines = []
+            lines.append("Auto-detect (scan LSB=1..8): higher score = more 'stego-ish'")
+            for r in autodet_rows:
+                lines.append(
+                    f"LSBs={r['lsbs']}: score={r['score']:.3f} | "
+                    f"chi_p={r['chi_p']:.4f} corr={r['corr']:.4f} "
+                    f"lsb_ratio={r['lsb_ratio']:.4f} var={r['var']:.4f}"
+                )
             if best:
-                rep.append(f"→ Likely LSB depth: {best['lsbs']} (score {best['score']:.3f})")
-            rep.append("\nLSB variance over time blocks: brighter = more variability (possible embedding zones)")
-            self.an_audio_text.delete(1.0, tk.END)
-            self.an_audio_text.insert(1.0, "\n".join(rep))
+                lines.append(f"\nLikely LSB depth: {best['lsbs']} (score {best['score']:.3f})\n")
 
-            # Display images
+            lines.append("Summary on selected plane")
+            lines.append("------------------------")
+            lines.append(f"File: {os.path.basename(path)}  |  {sr} Hz, {params.nchannels} ch, {8*params.sampwidth}-bit, {dur:.2f}s")
+            lines.append(f"Analyzed bit-plane: {k}  (UI value {k+1})")
+            lines.append(f"Chi-square LSB p-value (overall): {chi_p_overall:.4f}")
+            for c in range(C): lines.append(f"  - ch{c+1}: {chi_p_ch[c]:.4f}")
+            lines.append(f"Neighbor correlation (overall): {corr_overall:.4f}")
+            for c in range(C): lines.append(f"  - ch{c+1}: {corr_ch[c]:.4f}")
+            lines.append(f"LSB ones-ratio (overall): {lsb_ratio_overall:.4f}")
+            for c in range(C): lines.append(f"  - ch{c+1}: {lsb_ratio_ch[c]:.4f}")
+            lines.append(f"Mean block variance on plane {k}: {lsb_var_mean:.4f}")
+
+            # ---- show text ----
+            self.an_audio_text.delete(1.0, tk.END)
+            self.an_audio_text.insert(1.0, "\n".join(lines))
+
+            # ---- show images ----
             def _to_tk(im, max_wh=(450, 450)):
                 imc = im.copy(); imc.thumbnail(max_wh)
                 return ImageTk.PhotoImage(imc)
@@ -2067,30 +2076,20 @@ class StegApp(TkinterDnD.Tk):
             else:
                 self.viz_diffaudio.configure(image='', text="(Optional) Provide cover WAV to see difference spikes")
 
-            # -------- persist a JSON-ready report for Save --------
-            self._last_audio_report = {
-                "file": path,
-                "cover_hint": cover_path if cover_path else None,
-                "samplerate": int(sr),
-                "channels": int(params.nchannels),
-                "bitdepth": int(8*params.sampwidth),
-                "duration_sec": float(dur),
-                "assumed_lsbs": int(lsbs),
-                "metrics": {
-                    "chi_p_overall": float(chi_p_overall),
-                    "chi_p_per_channel": [float(v) for v in chi_p_ch],
-                    "corr_overall": float(corr_overall),
-                    "corr_per_channel": [float(v) for v in corr_ch],
-                    "lsb_ratio_overall": float(lsb_ratio_overall),
-                    "lsb_ratio_per_channel": [float(v) for v in lsb_ratio_ch],
-                    "lsb_var_mean": float(lsb_var_mean),
-                },
-                "autodetect_scan_1to4": autodet,
-                "autodetect_best": best,
-            }
-
         except Exception as e:
             messagebox.showerror("Analysis Error", str(e))
+
+    def _score_stegoish(self, chi_p, corr, lsb_ratio, var_mean):
+        """
+        Heuristic: higher = more 'stego-ish'.
+        - want chi_p small (LSB distribution deviates from 50/50) -> use (1 - chi_p)
+        - want neighbor correlation small (more noise)          -> use (1 - corr)
+        - want ones-ratio near 0.5 -> use bell around 0.5
+        - want variance across blocks high                      -> use var_mean
+        Weights are gentle; tweak if you like.
+        """
+        near_half = 1.0 - min(1.0, abs(lsb_ratio - 0.5) * 4.0)  # 1.0 at 0.5, ~0 by 0.25/0.75
+        return 0.35 * (1.0 - chi_p) + 0.35 * (1.0 - corr) + 0.15 * near_half + 0.15 * var_mean
 
 
     def _wav_read_any(self, path):
@@ -2124,36 +2123,26 @@ class StegApp(TkinterDnD.Tk):
             samples = arr.reshape(-1, C)
         return params, samples
 
-    def _chi_square_lsb_audio(self, samples, num_lsbs):
-        """
-        Chi-square across all channels for the chosen LSB depth.
-        Returns (overall_p_value, [per_channel_p_values]).
-        """
+    def _chi_square_lsb_audio(self, samples, bit_index=0):
+        """Chi-square on the selected bit-plane (0 = LSB)."""
         import math
-        mask = (1 << num_lsbs) - 1
-
-        # Overall test using only the least-significant bit
-        lsb = ((samples & mask) & 1).ravel()
-        n = lsb.size
-        ones = int(np.count_nonzero(lsb))
-        zeros = n - ones
+        bp = ((samples >> bit_index) & 1).ravel()
+        n = bp.size
+        ones = int(np.count_nonzero(bp)); zeros = n - ones
         expected = n / 2.0
         chi = ((zeros - expected) ** 2) / expected + ((ones - expected) ** 2) / expected
-        p_overall = 1.0 if chi <= 1e-12 else math.exp(-chi / 2.0)  # approx tail for df=1
+        p_overall = 1.0 if chi <= 1e-12 else math.exp(-chi / 2.0)
 
-        # Per-channel
         p_ch = []
         C = samples.shape[1]
         for c in range(C):
-            ch = ((samples[:, c] & mask) & 1)
+            ch = ((samples[:, c] >> bit_index) & 1)
             n_c = ch.size
-            ones_c = int(np.count_nonzero(ch))
-            zeros_c = n_c - ones_c
+            ones_c = int(np.count_nonzero(ch)); zeros_c = n_c - ones_c
             expected_c = n_c / 2.0
             chi_c = ((zeros_c - expected_c) ** 2) / expected_c + ((ones_c - expected_c) ** 2) / expected_c
             p_c = 1.0 if chi_c <= 1e-12 else math.exp(-chi_c / 2.0)
             p_ch.append(float(p_c))
-
         return float(p_overall), p_ch
 
 
@@ -2177,34 +2166,26 @@ class StegApp(TkinterDnD.Tk):
         overall = float(np.mean(corr_ch)) if corr_ch else 0.0
         return overall, corr_ch
 
-    def _lsb_ratio_audio(self, samples, num_lsbs):
-        mask = (1 << num_lsbs) - 1
-        lsb = (samples & mask) & 1
-        overall = float(np.count_nonzero(lsb)) / max(lsb.size, 1)
-        ch = []
-        for c in range(samples.shape[1]):
-            arr = lsb[:,c]
-            ch.append(float(np.count_nonzero(arr)) / max(arr.size, 1))
+    def _lsb_ratio_audio(self, samples, bit_index=0):
+        """Ones-ratio for the selected bit-plane (0 = LSB)."""
+        bp = ((samples >> bit_index) & 1)
+        overall = float(np.count_nonzero(bp)) / max(bp.size, 1)
+        ch = [float(np.count_nonzero(bp[:, c])) / max(bp[:, c].size, 1) for c in range(bp.shape[1])]
         return overall, ch
 
-    def _lsb_block_variance_1d(self, samples, num_lsbs, block=2048):
-        """
-        Compute variance of LSB (1-bit of assumed num_lsbs) per time block (across channels).
-        Returns a 1D array of length ~N/block, normalized 0..1.
-        """
-        mask = (1 << num_lsbs) - 1
-        lsb = ((samples & mask) & 1).astype(np.float32)
-        # average across channels to 1D
-        if lsb.ndim == 2 and lsb.shape[1] > 1:
-            lsb = lsb.mean(axis=1)
-        N = lsb.shape[0]
+    def _lsb_block_variance_1d(self, samples, bit_index=0, block=2048):
+        """Variance over time for the selected bit-plane; normalized 0..1 series."""
+        bp = ((samples >> bit_index) & 1).astype(np.float32)
+        if bp.ndim == 2 and bp.shape[1] > 1:
+            bp = bp.mean(axis=1)
+        N = bp.shape[0]
         if N < block:
-            v = np.array([lsb.var()], dtype=np.float32)
+            v = np.array([bp.var()], dtype=np.float32)
         else:
             nblk = N // block
             v = np.zeros(nblk, dtype=np.float32)
             for i in range(nblk):
-                seg = lsb[i*block:(i+1)*block]
+                seg = bp[i*block:(i+1)*block]
                 v[i] = float(seg.var())
         if v.max() > 0:
             v = v / v.max()

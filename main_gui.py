@@ -12,6 +12,9 @@ import numpy as np
 from bitarray import bitarray
 import math
 import hashlib
+import json
+import tempfile
+import shutil
 
 
 class DropZone(tk.Frame):
@@ -108,6 +111,17 @@ class StegApp(TkinterDnD.Tk):
         self._audio_proc = None  # for macOS/Linux subprocess player
         self._ab_state = "cover"  # toggle state
 
+        # Video variables
+        self.video_cover_path = tk.StringVar()
+        self.video_payload_path = tk.StringVar()
+        self.video_stego_path = tk.StringVar()
+        self.video_decode_stego_path = tk.StringVar()
+        self.video_secret_key = tk.StringVar()
+        self.video_num_lsbs = tk.IntVar(value=1)
+        self.video_payload_type = tk.StringVar(value="file")
+        self.video_payload_text = tk.StringVar()
+        self.show_video_key = tk.BooleanVar(value=False)
+
         self.setup_ui()
 
     def setup_ui(self):
@@ -126,6 +140,12 @@ class StegApp(TkinterDnD.Tk):
         audio_decode_frame = ttk.Frame(notebook)
         notebook.add(audio_decode_frame, text="Audio Decode")
 
+        video_encode_frame = ttk.Frame(notebook)
+        notebook.add(video_encode_frame, text="Video Encode")
+
+        video_decode_frame = ttk.Frame(notebook)
+        notebook.add(video_decode_frame, text="Video Decode")
+
         analysis_frame = ttk.Frame(notebook)
         notebook.add(analysis_frame, text="Image Analysis")
 
@@ -138,6 +158,24 @@ class StegApp(TkinterDnD.Tk):
         self.setup_decode_tab(decode_frame)
         self.setup_audio_encode_tab(audio_encode_frame)
         self.setup_audio_decode_tab(audio_decode_frame)
+        self.setup_video_encode_tab(video_encode_frame)
+        self.setup_video_decode_tab(video_decode_frame)
+
+    def create_scrolled_frame(self, parent):
+        canvas = tk.Canvas(parent, bg='#f5f5f5')
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        inner_frame = ttk.Frame(canvas)
+        inner_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(
+                scrollregion=canvas.bbox("all")
+            )
+        )
+        canvas.create_window((0, 0), window=inner_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        return inner_frame
 
     # -------------------- IMAGE ENCODE TAB --------------------
     def setup_encode_tab(self, parent):
@@ -229,7 +267,7 @@ class StegApp(TkinterDnD.Tk):
         tk.Label(lsb_frame, text="Number of LSBs:", font=('Helvetica', 10, 'bold'),
                  bg='#f5f5f5').pack(side=tk.LEFT)
 
-        lsb_slider = Scale(lsb_frame, from_=1, to=8, orient=HORIZONTAL,
+        lsb_slider = tk.Scale(lsb_frame, from_=1, to=8, orient=HORIZONTAL,
                            variable=self.num_lsbs, command=self.update_capacity_display,
                            bg='#f5f5f5', font=('Helvetica', 9))
         lsb_slider.pack(side=tk.LEFT, padx=10)
@@ -311,7 +349,9 @@ class StegApp(TkinterDnD.Tk):
 
     # -------------------- AUDIO ENCODE TAB --------------------
     def setup_audio_encode_tab(self, parent):
-        file_frame = tk.LabelFrame(parent, text="Audio File Selection", font=('Helvetica', 10, 'bold'),
+        inner_frame = self.create_scrolled_frame(parent)
+
+        file_frame = tk.LabelFrame(inner_frame, text="Audio File Selection", font=('Helvetica', 10, 'bold'),
                                    bg='#f5f5f5', padx=10, pady=10)
         file_frame.pack(fill=tk.X, padx=10, pady=5)
 
@@ -373,7 +413,7 @@ class StegApp(TkinterDnD.Tk):
         self.audio_payload_text_area.pack(fill=tk.X, pady=5)
         self.audio_payload_text_area.bind('<<Modified>>', self.update_audio_payload_text)
 
-        config_frame = tk.LabelFrame(parent, text="Audio Configuration",
+        config_frame = tk.LabelFrame(inner_frame, text="Audio Configuration",
                                      font=('Helvetica', 10, 'bold'), bg='#f5f5f5',
                                      padx=10, pady=10)
         config_frame.pack(fill=tk.X, padx=10, pady=5)
@@ -396,7 +436,6 @@ class StegApp(TkinterDnD.Tk):
         tk.Label(lsb_frame, text="Number of LSBs:", font=('Helvetica', 10, 'bold'),
                  bg='#f5f5f5').pack(side=tk.LEFT)
 
-        # FIX Bullet 2: extend to 8 LSBs
         audio_lsb_slider = Scale(lsb_frame, from_=1, to=8, orient=HORIZONTAL,
                                  variable=self.audio_num_lsbs,
                                  command=lambda _=None: (self.update_audio_capacity_display(), self.update_audio_visuals()),
@@ -407,7 +446,7 @@ class StegApp(TkinterDnD.Tk):
                                              font=('Helvetica', 10, 'italic'), bg='#f5f5f5')
         self.audio_capacity_label.pack(side=tk.LEFT, padx=20)
 
-        info_frame = tk.LabelFrame(parent, text="Audio Information",
+        info_frame = tk.LabelFrame(inner_frame, text="Audio Information",
                                    font=('Helvetica', 10, 'bold'), bg='#f5f5f5',
                                    padx=10, pady=10)
         info_frame.pack(fill=tk.X, padx=10, pady=5)
@@ -416,8 +455,7 @@ class StegApp(TkinterDnD.Tk):
                                          font=('Helvetica', 10), bg='#f5f5f5')
         self.audio_info_label.pack(pady=5)
 
-        # NEW: Playback & Compare UI (Bullet 8)
-        play_frame = tk.LabelFrame(parent, text="Playback & Compare",
+        play_frame = tk.LabelFrame(inner_frame, text="Playback & Compare",
                                    font=('Helvetica', 10, 'bold'), bg='#f5f5f5', padx=10, pady=10)
         play_frame.pack(fill=tk.X, padx=10, pady=5)
 
@@ -441,11 +479,10 @@ class StegApp(TkinterDnD.Tk):
             font=("Helvetica", 10, "bold"), command=self.stop_audio)
         self.btn_stop_audio_enc.pack(side=tk.LEFT, padx=5, pady=2)
 
-        # NEW: Waveform + LSB visualisation (Bullet 9)
-        vis_frame = tk.LabelFrame(parent, text="Audio Visualisation (LSB changes)",
+        vis_frame = tk.LabelFrame(inner_frame, text="Audio Visualisation (LSB changes)",
                                   font=('Helvetica', 10, 'bold'), bg='#f5f5f5',
                                   padx=10, pady=10)
-        vis_frame.pack(fill=tk.BOTH, expand=False, padx=10, pady=5)
+        vis_frame.pack(fill=tk.X, padx=10, pady=5)
 
         canv_height = 140
         self.audio_canvas_cover = tk.Canvas(vis_frame, width=540, height=canv_height, bg="#ffffff", bd=1, relief=tk.SUNKEN)
@@ -453,10 +490,10 @@ class StegApp(TkinterDnD.Tk):
         self.audio_canvas_stego = tk.Canvas(vis_frame, width=540, height=canv_height, bg="#ffffff", bd=1, relief=tk.SUNKEN)
         self.audio_canvas_stego.pack(side=tk.LEFT, padx=5, pady=5)
 
-        self.audio_flip_label = tk.Label(parent, text="LSB flips: N/A", bg="#f5f5f5", font=("Helvetica", 10, "italic"))
+        self.audio_flip_label = tk.Label(inner_frame, text="LSB flips: N/A", bg="#f5f5f5", font=("Helvetica", 10, "italic"))
         self.audio_flip_label.pack(anchor=tk.W, padx=20, pady=(0, 10))
 
-        button_frame = tk.Frame(parent, bg='#f5f5f5')
+        button_frame = tk.Frame(inner_frame, bg='#f5f5f5')
         button_frame.pack(fill=tk.X, padx=10, pady=(10, 20))
 
         tk.Button(button_frame, text="🎵 Encode Audio Payload", bg="#4CAF50", fg="white",
@@ -531,475 +568,586 @@ class StegApp(TkinterDnD.Tk):
 
         decode_button = tk.Button(decode_frame, text="🔓 Select Stego Image & Decode",
                                   bg="#2196F3", fg="white", font=("Helvetica", 14, "bold"),
-                                  command=self.run_decode, height=3, width=30)
-        decode_button.pack(pady=20)
+                                  command=self.run_decode, height=2, width=30)
+        decode_button.pack(pady=10)
 
-        self.decode_result = tk.Text(decode_frame, height=10, width=60,
+        self.decode_result = tk.Text(decode_frame, height=10, width=90,
                                      font=('Consolas', 10), bg='#f8f8f8',
                                      relief=tk.SUNKEN, bd=2)
         self.decode_result.pack(fill=tk.BOTH, expand=True, pady=10)
 
-    # -------------------- COMMON (image region selection) --------------------
-    def setup_canvas_bindings(self):
-        self.cover_image_on_canvas = None
-        self.selection_rect = None
-        self.embed_region = None
-        self.original_display_size = None
-        self.original_img_size = None
+    # -------------------- VIDEO ENCODE TAB --------------------
+    def setup_video_encode_tab(self, parent):
+        inner_frame = self.create_scrolled_frame(parent)
 
-        self.cover_canvas.bind("<ButtonPress-1>", self.on_mouse_down)
-        self.cover_canvas.bind("<B1-Motion>", self.on_mouse_drag)
-        self.cover_canvas.bind("<ButtonRelease-1>", self.on_mouse_up)
+        file_frame = tk.LabelFrame(inner_frame, text="Video File Selection", font=('Helvetica', 10, 'bold'),
+                                   bg='#f5f5f5', padx=10, pady=10)
+        file_frame.pack(fill=tk.X, padx=10, pady=5)
 
-    def clear_selection(self):
-        self.embed_region = None
-        if self.selection_rect:
-            self.cover_canvas.delete(self.selection_rect)
-            self.selection_rect = None
+        cover_section = tk.Frame(file_frame, bg='#f5f5f5')
+        cover_section.pack(fill=tk.X, pady=5)
+
+        tk.Label(cover_section, text="Cover Video File (MP4):", font=('Helvetica', 10, 'bold'),
+                 bg='#f5f5f5').pack(anchor=tk.W)
+
+        cover_input_frame = tk.Frame(cover_section, bg='#f5f5f5')
+        cover_input_frame.pack(fill=tk.X, pady=2)
+
+        self.video_cover_entry = tk.Entry(cover_input_frame, textvariable=self.video_cover_path,
+                                          font=('Helvetica', 10), state='readonly')
+        self.video_cover_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+
+        tk.Button(cover_input_frame, text="Browse", command=self.browse_video_cover,
+                  bg='#4CAF50', fg='white', font=('Helvetica', 9, 'bold')).pack(side=tk.RIGHT)
+
+        self.video_cover_drop_zone = DropZone(cover_section,
+                                              "Drag & Drop Cover Video File Here\n(MP4 format)",
+                                              callback=self.set_video_cover,
+                                              file_types=['.mp4'])
+        self.video_cover_drop_zone.pack(fill=tk.X, pady=5)
+
+        payload_section = tk.Frame(file_frame, bg='#f5f5f5')
+        payload_section.pack(fill=tk.X, pady=10)
+
+        tk.Label(payload_section, text="Payload:", font=('Helvetica', 10, 'bold'),
+                 bg='#f5f5f5').pack(anchor=tk.W)
+
+        payload_type_frame = tk.Frame(payload_section, bg='#f5f5f5')
+        payload_type_frame.pack(fill=tk.X, pady=2)
+
+        tk.Radiobutton(payload_type_frame, text="File", variable=self.video_payload_type,
+                       value="file", command=self.toggle_video_payload_input,
+                       bg='#f5f5f5', font=('Helvetica', 10)).pack(side=tk.LEFT, padx=10)
+        tk.Radiobutton(payload_type_frame, text="Text", variable=self.video_payload_type,
+                       value="text", command=self.toggle_video_payload_input,
+                       bg='#f5f5f5', font=('Helvetica', 10)).pack(side=tk.LEFT, padx=10)
+
+        self.video_payload_file_frame = tk.Frame(payload_section, bg='#f5f5f5')
+        self.video_payload_file_frame.pack(fill=tk.X, pady=2)
+
+        self.video_payload_entry = tk.Entry(self.video_payload_file_frame, textvariable=self.video_payload_path,
+                                            font=('Helvetica', 10), state='readonly')
+        self.video_payload_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+
+        tk.Button(self.video_payload_file_frame, text="Browse", command=self.browse_video_payload,
+                  bg='#2196F3', fg='white', font=('Helvetica', 9, 'bold')).pack(side=tk.RIGHT)
+
+        self.video_payload_drop_zone = DropZone(payload_section,
+                                                "Drag & Drop Payload File Here\n(Any file type)",
+                                                callback=self.set_video_payload)
+        self.video_payload_drop_zone.pack(fill=tk.X, pady=5)
+
+        self.video_payload_text_frame = tk.Frame(payload_section, bg='#f5f5f5')
+        self.video_payload_text_area = tk.Text(self.video_payload_text_frame, height=4, font=('Helvetica', 10))
+        self.video_payload_text_area.pack(fill=tk.X, pady=5)
+        self.video_payload_text_area.bind('<<Modified>>', self.update_video_payload_text)
+
+        config_frame = tk.LabelFrame(inner_frame, text="Video Configuration",
+                                     font=('Helvetica', 10, 'bold'), bg='#f5f5f5',
+                                     padx=10, pady=10)
+        config_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        key_frame = tk.Frame(config_frame, bg='#f5f5f5')
+        key_frame.pack(fill=tk.X, pady=2)
+
+        tk.Label(key_frame, text="Secret Key:", font=('Helvetica', 10, 'bold'),
+                 bg='#f5f5f5').pack(side=tk.LEFT)
+        self.video_key_entry = tk.Entry(key_frame, textvariable=self.video_secret_key, width=20,
+                                        font=('Helvetica', 10), show="*")
+        self.video_key_entry.pack(side=tk.LEFT, padx=5)
+        tk.Checkbutton(key_frame, text="Show Key", variable=self.show_video_key,
+                       command=self.toggle_video_key_visibility, bg='#f5f5f5',
+                       font=('Helvetica', 9)).pack(side=tk.LEFT, padx=5)
+
+        lsb_frame = tk.Frame(config_frame, bg='#f5f5f5')
+        lsb_frame.pack(fill=tk.X, pady=5)
+
+        tk.Label(lsb_frame, text="Number of LSBs:", font=('Helvetica', 10, 'bold'),
+                 bg='#f5f5f5').pack(side=tk.LEFT)
+
+        video_lsb_slider = Scale(lsb_frame, from_=1, to=8, orient=HORIZONTAL,
+                                 variable=self.video_num_lsbs,
+                                 command=lambda _=None: (self.update_video_capacity_display(), self.update_video_visuals()),
+                                 bg='#f5f5f5', font=('Helvetica', 9))
+        video_lsb_slider.pack(side=tk.LEFT, padx=10)
+
+        self.video_capacity_label = tk.Label(lsb_frame, text="Capacity: N/A",
+                                             font=('Helvetica', 10, 'italic'), bg='#f5f5f5')
+        self.video_capacity_label.pack(side=tk.LEFT, padx=20)
+
+        info_frame = tk.LabelFrame(inner_frame, text="Video Information",
+                                   font=('Helvetica', 10, 'bold'), bg='#f5f5f5',
+                                   padx=10, pady=10)
+        info_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        self.video_info_label = tk.Label(info_frame, text="Select a video file to view information",
+                                         font=('Helvetica', 10), bg='#f5f5f5')
+        self.video_info_label.pack(pady=5)
+
+        play_frame = tk.LabelFrame(inner_frame, text="Playback & Compare",
+                                   font=('Helvetica', 10, 'bold'), bg='#f5f5f5', padx=10, pady=10)
+        play_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        self.btn_play_video_cover_enc = tk.Button(
+            play_frame, text="▶ Play Cover Video", bg="#4CAF50", fg="white",
+            font=("Helvetica", 10, "bold"), command=self.play_video_cover)
+        self.btn_play_video_cover_enc.pack(side=tk.LEFT, padx=5, pady=2)
+
+        self.btn_play_video_stego_enc = tk.Button(
+            play_frame, text="▶ Play Stego Video", bg="#9C27B0", fg="white",
+            font=("Helvetica", 10, "bold"), command=self.play_video_stego, state=tk.DISABLED)
+        self.btn_play_video_stego_enc.pack(side=tk.LEFT, padx=5, pady=2)
+
+        vis_frame = tk.LabelFrame(inner_frame, text="I-Frame Visualisation (LSB changes)",
+                                  font=('Helvetica', 10, 'bold'), bg='#f5f5f5',
+                                  padx=10, pady=10)
+        vis_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        canv_height = 140
+        self.video_canvas_cover = tk.Canvas(vis_frame, width=540, height=canv_height, bg="#ffffff", bd=1, relief=tk.SUNKEN)
+        self.video_canvas_cover.pack(side=tk.LEFT, padx=5, pady=5)
+        self.video_canvas_stego = tk.Canvas(vis_frame, width=540, height=canv_height, bg="#ffffff", bd=1, relief=tk.SUNKEN)
+        self.video_canvas_stego.pack(side=tk.LEFT, padx=5, pady=5)
+
+        self.video_flip_label = tk.Label(inner_frame, text="LSB flips: N/A", bg="#f5f5f5", font=("Helvetica", 10, "italic"))
+        self.video_flip_label.pack(anchor=tk.W, padx=20, pady=(0, 10))
+
+        button_frame = tk.Frame(inner_frame, bg='#f5f5f5')
+        button_frame.pack(fill=tk.X, padx=10, pady=(10, 20))
+
+        tk.Button(button_frame, text="📹 Encode Video Payload", bg="#4CAF50", fg="white",
+                  font=("Helvetica", 12, "bold"), command=self.run_video_encode,
+                  height=2, width=25).pack(side=tk.LEFT, padx=10)
+
+        tk.Button(button_frame, text="🗑️ Clear All", bg="#FF9800", fg="white",
+                  font=("Helvetica", 12, "bold"), command=self.clear_video_all,
+                  height=2, width=15).pack(side=tk.LEFT, padx=10)
+
+        self.toggle_video_payload_input()
+
+    # -------------------- VIDEO DECODE TAB --------------------
+    def setup_video_decode_tab(self, parent):
+        decode_frame = tk.LabelFrame(parent, text="Decode Steganographic Video",
+                                     font=('Helvetica', 12, 'bold'), bg='#f5f5f5',
+                                     padx=20, pady=20)
+        decode_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        instructions = tk.Label(decode_frame,
+                                text="Select a steganographic MP4 file to extract the hidden payload from its I-frames.\n"
+                                     "Use the same secret key and LSB settings as during encoding.",
+                                font=('Helvetica', 10), bg='#f5f5f5', wraplength=700, justify=tk.CENTER)
+        instructions.pack(pady=10)
+
+        play_frame = tk.LabelFrame(decode_frame, text="Playback (Decode Tab)",
+                                   font=('Helvetica', 10, 'bold'), bg='#f5f5f5', padx=10, pady=10)
+        play_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        self.btn_play_video_stego_dec = tk.Button(
+            play_frame, text="▶ Play Stego Video (choose file)", bg="#9C27B0", fg="white",
+            font=("Helvetica", 10, "bold"), command=self.play_video_stego)
+        self.btn_play_video_stego_dec.pack(side=tk.LEFT, padx=5, pady=2)
+
+        self.video_stego_canvas_dec = tk.Canvas(decode_frame, width=1100, height=140, bg="#ffffff", bd=1, relief=tk.SUNKEN)
+        self.video_stego_canvas_dec.pack(fill=tk.X, padx=10, pady=10)
+
+        decode_button = tk.Button(decode_frame, text="📹 Select Stego Video & Decode",
+                                  bg="#2196F3", fg="white", font=("Helvetica", 14, "bold"),
+                                  command=self.run_video_decode, height=2, width=30)
+        decode_button.pack(pady=10)
+
+        self.video_decode_result = tk.Text(decode_frame, height=10, width=90,
+                                           font=('Consolas', 10), bg='#f8f8f8',
+                                           relief=tk.SUNKEN, bd=2)
+        self.video_decode_result.pack(fill=tk.BOTH, expand=True, pady=10)
+
+    # -------------------- BROWSE / SET FUNCTIONS --------------------
+    def browse_cover(self):
+        path = filedialog.askopenfilename(filetypes=[("Image files", "*.png *.bmp *.jpg *.jpeg")])
+        if path:
+            self.set_cover_image(path)
+
+    def set_cover_image(self, path):
+        self.cover_path.set(path)
+        self.cover_drop_zone.update_text(os.path.basename(path))
+        self.display_image_on_canvas(path, self.cover_canvas)
         self.update_capacity_display()
 
-    # -------------------- AUDIO HELPERS: playback & visualisation --------------------
-    def _play_wav_crossplatform(self, path):
-        sys = platform.system()
-        try:
-            if sys == "Windows":
-                import winsound
-                winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
-                self._audio_proc = None  # winsound handles it
-            elif sys == "Darwin":
-                # macOS: afplay
-                self._audio_proc = subprocess.Popen(["afplay", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            else:
-                # Linux: try aplay, fallback to paplay
-                try:
-                    self._audio_proc = subprocess.Popen(["aplay", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                except Exception:
-                    self._audio_proc = subprocess.Popen(["paplay", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception as e:
-            messagebox.showerror("Playback error", f"Could not play audio:\n{e}")
+    def browse_payload(self):
+        path = filedialog.askopenfilename()
+        if path:
+            self.set_payload_file(path)
 
-    def stop_audio(self):
-        sys = platform.system()
-        try:
-            if sys == "Windows":
-                import winsound
-                winsound.PlaySound(None, 0)  # stop async
-            else:
-                if self._audio_proc and self._audio_proc.poll() is None:
-                    self._audio_proc.terminate()
-                    self._audio_proc = None
-        except Exception:
-            pass
-
-    def play_audio_cover(self):
-        path = self.audio_cover_path.get()
-        if not path or not os.path.exists(path):
-            messagebox.showinfo("Info", "No cover audio loaded.")
-            return
-        self._ab_state = "cover"
-        self._play_wav_crossplatform(path)
-
-    def _get_any_stego_path(self):
-        # Prefer stego created in encode tab; fallback to one chosen in decode tab
-        p1 = self.audio_stego_path.get()
-        p2 = self.audio_decode_stego_path.get()
-        if p1 and os.path.exists(p1):
-            return p1
-        if p2 and os.path.exists(p2):
-            return p2
-        return None
-
-    def play_audio_stego(self):
-        # If no stego path yet on encode tab, allow choosing one (useful in decode tab too)
-        path = self._get_any_stego_path()
-        if not path:
-            # let user choose in case of decode tab or external stego
-            path = filedialog.askopenfilename(title="Select Stego Audio (WAV)", filetypes=[("WAV files", "*.wav")])
-            if not path:
-                return
-            self.audio_decode_stego_path.set(path)
-            # draw decode tab waveform
-            self._draw_waveform(self.audio_stego_canvas_dec, path, title="Stego (Decode)")
-
-        self._ab_state = "stego"
-        self._play_wav_crossplatform(path)
-
-    def ab_toggle(self):
-        # Quickly toggle between cover and stego
-        stego = self._get_any_stego_path()
-        cover = self.audio_cover_path.get()
-        if not cover or not os.path.exists(cover):
-            messagebox.showinfo("Info", "No cover audio loaded to A/B against.")
-            return
-        if not stego:
-            messagebox.showinfo("Info", "No stego audio available to A/B against.")
-            return
-
-        # toggle
-        self.stop_audio()
-        if self._ab_state == "cover":
-            self._ab_state = "stego"
-            self._play_wav_crossplatform(stego)
-        else:
-            self._ab_state = "cover"
-            self._play_wav_crossplatform(cover)
-
-    def _load_wav_samples(self, path):
-        with wave.open(path, 'rb') as wav_file:
-            params = wav_file.getparams()
-            frames = wav_file.readframes(params.nframes)
-        if params.sampwidth == 1:
-            data = np.frombuffer(frames, dtype=np.uint8).astype(np.int16) - 128  # center to 0
-        elif params.sampwidth == 2:
-            data = np.frombuffer(frames, dtype=np.int16)
-        elif params.sampwidth == 3:
-            raw = np.frombuffer(frames, dtype=np.uint8).reshape(-1, 3)
-            data = (raw[:, 0].astype(np.int32) |
-                    (raw[:, 1].astype(np.int32) << 8) |
-                    (raw[:, 2].astype(np.int32) << 16))
-            data = np.where(data >= (1 << 23), data - (1 << 24), data).astype(np.int32)
-        else:
-            raise ValueError("Unsupported sample width. Only 8/16/24-bit.")
-        # If stereo or more, convert to mono for drawing
-        with wave.open(path, 'rb') as wav_file:
-            channels = wav_file.getnchannels()
-        if channels > 1:
-            data = data.reshape(-1, channels).mean(axis=1)
-        return data
-
-    def _draw_waveform(self, canvas, wav_path, title=""):
-        if not os.path.exists(wav_path):
-            canvas.delete("all")
-            return
-        try:
-            samples = self._load_wav_samples(wav_path)
-        except Exception:
-            canvas.delete("all")
-            return
-
-        canvas.delete("all")
-        w = canvas.winfo_width() or 540
-        h = canvas.winfo_height() or 140
-        # draw title
-        if title:
-            canvas.create_text(5, 8, text=title, anchor="w", font=("Helvetica", 9, "bold"))
-
-        if len(samples) < 2:
-            return
-        # downsample for speed
-        step = max(1, len(samples) // (w-10))
-        seg = samples[::step]
-        if len(seg) < 2:
-            return
-        # normalize to canvas height
-        maxv = float(np.max(np.abs(seg))) or 1.0
-        scale_y = (h - 20) / (2 * maxv)
-        points = []
-        for i, v in enumerate(seg[:w-10]):
-            x = 5 + i
-            y = h/2 - (v * scale_y)
-            points.append((x, y))
-
-        # draw midline
-        canvas.create_line(5, h/2, w-5, h/2, fill="#cccccc")
-        # draw waveform
-        for i in range(1, len(points)):
-            x1, y1 = points[i-1]
-            x2, y2 = points[i]
-            canvas.create_line(x1, y1, x2, y2)
-
-    def _lsb_flip_count(self, cover_path, stego_path, num_lsbs):
-        if not (cover_path and stego_path and os.path.exists(cover_path) and os.path.exists(stego_path)):
-            return None
-        try:
-            with wave.open(cover_path, 'rb') as w1, wave.open(stego_path, 'rb') as w2:
-                if (w1.getsampwidth(), w1.getnchannels(), w1.getframerate()) != \
-                   (w2.getsampwidth(), w2.getnchannels(), w2.getframerate()):
-                    # Still try with min len & channel-agnostic mono compare
-                    pass
-
-            a = self._load_wav_samples(cover_path)
-            b = self._load_wav_samples(stego_path)
-            n = min(len(a), len(b))
-            if n == 0:
-                return 0
-            a = a[:n]
-            b = b[:n]
-            mask = (1 << num_lsbs) - 1
-            flips = np.count_nonzero(((a ^ b) & mask) != 0)
-            return int(flips)
-        except Exception:
-            return None
-
-    def update_audio_visuals(self):
-        # Draw cover waveform
-        cpath = self.audio_cover_path.get()
-        if cpath and os.path.exists(cpath):
-            self._draw_waveform(self.audio_canvas_cover, cpath, title="Cover")
-        else:
-            self.audio_canvas_cover.delete("all")
-
-        # Draw stego waveform (encode tab), if we have one
-        spath = self.audio_stego_path.get()
-        if spath and os.path.exists(spath):
-            self._draw_waveform(self.audio_canvas_stego, spath, title="Stego")
-            # compute LSB flips
-            flips = self._lsb_flip_count(cpath, spath, self.audio_num_lsbs.get())
-            if flips is None:
-                self.audio_flip_label.config(text="LSB flips: N/A")
-            else:
-                self.audio_flip_label.config(text=f"LSB flips (within {self.audio_num_lsbs.get()} LSBs): {flips:,}")
-        else:
-            self.audio_canvas_stego.delete("all")
-            self.audio_flip_label.config(text="LSB flips: N/A")
-
-    # -------------------- AUDIO tab set/browse --------------------
-    def set_audio_cover(self, file_path):
-        self.audio_cover_path.set(file_path)
-        self.audio_cover_drop_zone.update_text(f"✓ {os.path.basename(file_path)}")
-        self.display_audio_info(file_path)
-        self.update_audio_capacity_display()
-        self.update_audio_visuals()
-
-    def set_audio_payload(self, file_path):
-        self.audio_payload_path.set(file_path)
-        self.audio_payload_drop_zone.update_text(f"✓ {os.path.basename(file_path)}")
-        self.update_audio_capacity_display()
+    def set_payload_file(self, path):
+        self.payload_path.set(path)
+        self.payload_drop_zone.update_text(os.path.basename(path))
+        self.update_capacity_display()
 
     def browse_audio_cover(self):
-        path = filedialog.askopenfilename(
-            title="Select Cover Audio File",
-            filetypes=[("WAV files", "*.wav")]
-        )
+        path = filedialog.askopenfilename(filetypes=[("WAV files", "*.wav")])
         if path:
             self.set_audio_cover(path)
 
+    def set_audio_cover(self, path):
+        self.audio_cover_path.set(path)
+        self.audio_cover_drop_zone.update_text(os.path.basename(path))
+        self.update_audio_info()
+        self.update_audio_capacity_display()
+        self.update_audio_visuals()
+
     def browse_audio_payload(self):
-        path = filedialog.askopenfilename(title="Select Payload File")
+        path = filedialog.askopenfilename()
         if path:
             self.set_audio_payload(path)
 
-    def display_audio_info(self, path):
-        try:
-            with wave.open(path, 'rb') as wav_file:
-                frames = wav_file.getnframes()
-                sample_rate = wav_file.getframerate()
-                channels = wav_file.getnchannels()
-                sample_width = wav_file.getsampwidth()
-                duration = frames / sample_rate
+    def set_audio_payload(self, path):
+        self.audio_payload_path.set(path)
+        self.audio_payload_drop_zone.update_text(os.path.basename(path))
+        self.update_audio_capacity_display()
 
-                info_text = f"📊 Audio Information:\n"
-                info_text += f"Duration: {duration:.2f} seconds\n"
-                info_text += f"Sample Rate: {sample_rate} Hz\n"
-                info_text += f"Channels: {channels}\n"
-                info_text += f"Sample Width: {sample_width} bytes\n"
-                info_text += f"Total Samples: {frames}"
+    def browse_video_cover(self):
+        path = filedialog.askopenfilename(filetypes=[("MP4 files", "*.mp4")])
+        if path:
+            self.set_video_cover(path)
 
-                self.audio_info_label.config(text=info_text)
-        except Exception as e:
-            self.audio_info_label.config(text=f"Error reading audio file: {e}")
+    def set_video_cover(self, path):
+        self.video_cover_path.set(path)
+        self.video_cover_drop_zone.update_text(os.path.basename(path))
+        self.update_video_info()
+        self.update_video_capacity_display()
+        self.update_video_visuals()
 
-    # -------------------- TEXT/FILE toggles --------------------
-    def toggle_key_visibility(self):
-        self.key_entry.config(show="" if self.show_key.get() else "*")
+    def browse_video_payload(self):
+        path = filedialog.askopenfilename()
+        if path:
+            self.set_video_payload(path)
 
-    def toggle_audio_key_visibility(self):
-        self.audio_key_entry.config(show="" if self.show_audio_key.get() else "*")
+    def set_video_payload(self, path):
+        self.video_payload_path.set(path)
+        self.video_payload_drop_zone.update_text(os.path.basename(path))
+        self.update_video_capacity_display()
 
+    # -------------------- TOGGLE INPUTS --------------------
     def toggle_payload_input(self):
         if self.payload_type.get() == "file":
+            self.payload_text_frame.pack_forget()
             self.payload_file_frame.pack(fill=tk.X, pady=2)
             self.payload_drop_zone.pack(fill=tk.X, pady=5)
-            self.payload_drop_zone.enable()
-            self.payload_text_frame.pack_forget()
+            self.payload_text.set("")
         else:
             self.payload_file_frame.pack_forget()
             self.payload_drop_zone.pack_forget()
             self.payload_text_frame.pack(fill=tk.X, pady=5)
+            self.payload_path.set("")
+
         self.update_capacity_display()
 
     def toggle_audio_payload_input(self):
         if self.audio_payload_type.get() == "file":
+            self.audio_payload_text_frame.pack_forget()
             self.audio_payload_file_frame.pack(fill=tk.X, pady=2)
             self.audio_payload_drop_zone.pack(fill=tk.X, pady=5)
-            self.audio_payload_drop_zone.enable()
-            self.audio_payload_text_frame.pack_forget()
+            self.audio_payload_text.set("")
         else:
             self.audio_payload_file_frame.pack_forget()
             self.audio_payload_drop_zone.pack_forget()
             self.audio_payload_text_frame.pack(fill=tk.X, pady=5)
+            self.audio_payload_path.set("")
+
         self.update_audio_capacity_display()
+
+    def toggle_video_payload_input(self):
+        if self.video_payload_type.get() == "file":
+            self.video_payload_text_frame.pack_forget()
+            self.video_payload_file_frame.pack(fill=tk.X, pady=2)
+            self.video_payload_drop_zone.pack(fill=tk.X, pady=5)
+            self.video_payload_text.set("")
+        else:
+            self.video_payload_file_frame.pack_forget()
+            self.video_payload_drop_zone.pack_forget()
+            self.video_payload_text_frame.pack(fill=tk.X, pady=5)
+            self.video_payload_path.set("")
+
+        self.update_video_capacity_display()
 
     def update_payload_text(self, event=None):
         self.payload_text.set(self.payload_text_area.get("1.0", tk.END).strip())
-        self.payload_text_area.edit_modified(False)
         self.update_capacity_display()
 
     def update_audio_payload_text(self, event=None):
         self.audio_payload_text.set(self.audio_payload_text_area.get("1.0", tk.END).strip())
-        self.audio_payload_text_area.edit_modified(False)
         self.update_audio_capacity_display()
 
-    # -------------------- IMAGE DECODE/ENCODE --------------------
-    def browse_cover(self):
-        path = filedialog.askopenfilename(
-            title="Select Cover Image",
-            filetypes=[("Image files", "*.png *.bmp *.jpg *.jpeg *.gif")]
-        )
-        if path:
-            self.set_cover_image(path)
+    def update_video_payload_text(self, event=None):
+        self.video_payload_text.set(self.video_payload_text_area.get("1.0", tk.END).strip())
+        self.update_video_capacity_display()
 
-    def browse_payload(self):
-        path = filedialog.askopenfilename(title="Select Payload File")
-        if path:
-            self.set_payload_file(path)
+    # -------------------- KEY VISIBILITY --------------------
+    def toggle_key_visibility(self):
+        show = "" if self.show_key.get() else "*"
+        self.key_entry.config(show=show)
 
-    def set_cover_image(self, file_path):
-        self.cover_path.set(file_path)
-        self.cover_drop_zone.update_text(f"✓ {os.path.basename(file_path)}")
-        self.display_image(file_path)
-        self.update_capacity_display()
+    def toggle_audio_key_visibility(self):
+        show = "" if self.show_audio_key.get() else "*"
+        self.audio_key_entry.config(show=show)
 
-    def set_payload_file(self, file_path):
-        self.payload_path.set(file_path)
-        self.payload_drop_zone.update_text(f"✓ {os.path.basename(file_path)}")
-        self.update_capacity_display()
+    def toggle_video_key_visibility(self):
+        show = "" if self.show_video_key.get() else "*"
+        self.video_key_entry.config(show=show)
 
-    def display_image(self, path):
+    # -------------------- AUDIO INFO UPDATE --------------------
+    def update_audio_info(self):
+        path = self.audio_cover_path.get()
+        if not path:
+            self.audio_info_label.config(text="Select an audio file to view information")
+            return
         try:
-            img = Image.open(path)
-            canvas_width = self.cover_canvas.winfo_width()
-            canvas_height = self.cover_canvas.winfo_height()
-            if canvas_width < 10:
-                canvas_width = 450
-                canvas_height = 450
-
-            img_width, img_height = img.size
-            aspect_ratio = min(canvas_width / img_width, canvas_height / img_height)
-            new_width = int(img_width * aspect_ratio)
-            new_height = int(img_height * aspect_ratio)
-            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-
-            self.tk_img = ImageTk.PhotoImage(img)
-            self.cover_canvas.delete("all")
-            self.cover_image_on_canvas = self.cover_canvas.create_image(0, 0, anchor="nw", image=self.tk_img)
-            self.cover_canvas.config(scrollregion=(0, 0, new_width, new_height))
-            self.original_display_size = (new_width, new_height)
-            self.original_img_size = Image.open(path).size
+            with wave.open(path, 'rb') as wav:
+                params = wav.getparams()
+                duration = params.nframes / params.framerate
+                info = f"Duration: {duration:.2f} s | Sample Rate: {params.framerate} Hz | "
+                info += f"Channels: {params.nchannels} | Bit Depth: {params.sampwidth * 8} bits"
+            self.audio_info_label.config(text=info)
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to load image: {e}")
+            self.audio_info_label.config(text=f"Error reading audio info: {e}")
 
-    def on_mouse_down(self, event):
-        self.start_x, self.start_y = event.x, event.y
-        if self.selection_rect:
-            self.cover_canvas.delete(self.selection_rect)
-        self.selection_rect = self.cover_canvas.create_rectangle(
-            self.start_x, self.start_y, self.start_x, self.start_y,
-            outline="red", width=2
+    # -------------------- VIDEO INFO UPDATE --------------------
+    def update_video_info(self):
+        path = self.video_cover_path.get()
+        if not path:
+            self.video_info_label.config(text="Select a video file to view information")
+            return
+        try:
+            params = self.get_video_params(path)
+            duration = params['duration']
+            resolution = f"{params['width']}x{params['height']}"
+            fps = params['fps']
+            i_frame_count = params['i_frame_count']
+            info = f"Duration: {duration:.2f} s | Resolution: {resolution} | FPS: {fps:.2f} | I-frames: {i_frame_count} (Capacity based on first I-frame only)"
+            self.video_info_label.config(text=info)
+        except Exception as e:
+            self.video_info_label.config(text=f"Error reading video info: {e}")
+
+    def get_video_params(self, video_path):
+        if shutil.which("ffprobe") is None:
+            raise ValueError("FFprobe not found. Please install FFmpeg.")
+        # Get video stream info
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height,r_frame_rate,duration",
+             "-of", "json", video_path],
+            capture_output=True, text=True
         )
+        if result.returncode != 0:
+            raise ValueError("Failed to get video info.")
+        data = json.loads(result.stdout)
+        if not data.get("streams"):
+            raise ValueError("No video stream found.")
+        stream = data["streams"][0]
+        width = int(stream.get("width", 0))
+        height = int(stream.get("height", 0))
+        fps_frac = stream.get("r_frame_rate", "0/1")
+        fps = eval(fps_frac) if '/' in fps_frac else float(fps_frac)
+        duration = float(stream.get("duration", 0))
 
-    def on_mouse_drag(self, event):
-        self.cover_canvas.coords(self.selection_rect, self.start_x, self.start_y, event.x, event.y)
-
-    def on_mouse_up(self, event):
-        self.end_x, self.end_y = event.x, event.y
-        self.embed_region = (
-            min(self.start_x, self.end_x), min(self.start_y, self.end_y),
-            max(self.start_x, self.end_x), max(self.start_y, self.end_y)
+        # Count I-frames
+        result_frames = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "frame=pict_type", "-of", "json", video_path],
+            capture_output=True, text=True
         )
-        self.update_capacity_display()
+        frames_data = json.loads(result_frames.stdout)
+        i_frame_count = sum(1 for f in frames_data.get("frames", []) if f.get("pict_type") == "I")
 
-    def get_embed_region_in_original(self):
-        if not self.embed_region or not self.original_display_size:
-            return None
-        x1, y1, x2, y2 = self.embed_region
-        disp_w, disp_h = self.original_display_size
-        orig_w, orig_h = self.original_img_size
-        scale_x = orig_w / disp_w
-        scale_y = orig_h / disp_h
-        return (int(x1 * scale_x), int(y1 * scale_y), int(x2 * scale_x), int(y2 * scale_y))
+        return {
+            'width': width,
+            'height': height,
+            'fps': fps,
+            'duration': duration,
+            'i_frame_count': i_frame_count
+        }
 
-    # -------------------- HASH / KEY --------------------
-    def hash_key(self, key):
-        """Generate SHA-256 hash of the key and return first 4 bytes and integer seed."""
-        key_bytes = key.encode('utf-8')
-        key_hash = hashlib.sha256(key_bytes).digest()
-        hash_prefix = key_hash[:4]  # First 4 bytes for metadata
-        seed = int.from_bytes(key_hash, 'big') % (2**32)  # Convert to integer for random.seed
-        return hash_prefix, seed
+    # -------------------- PLAY FUNCTIONS --------------------
+    def play_audio_cover(self):
+        self.play_audio(self.audio_cover_path.get())
 
-    # -------------------- IMAGE ENCODE/DECODE --------------------
+    def play_audio_stego(self):
+        path = self.audio_stego_path.get() or self.audio_decode_stego_path.get()
+        self.play_audio(path)
+
+    def play_audio(self, path):
+        if not path:
+            return
+        self.stop_audio()
+        if platform.system() == 'Windows':
+            os.startfile(path)
+        else:
+            self._audio_proc = subprocess.Popen(["afplay" if platform.system() == 'Darwin' else "aplay", path])
+
+    def ab_toggle(self):
+        if self._ab_state == "cover":
+            self.play_audio_stego()
+            self._ab_state = "stego"
+        else:
+            self.play_audio_cover()
+            self._ab_state = "cover"
+
+    def stop_audio(self):
+        if self._audio_proc:
+            self._audio_proc.terminate()
+            self._audio_proc = None
+
+    def play_video_cover(self):
+        self.open_file(self.video_cover_path.get())
+
+    def play_video_stego(self):
+        path = self.video_stego_path.get() or self.video_decode_stego_path.get()
+        self.open_file(path)
+
+    # -------------------- VISUALS --------------------
+    def update_audio_visuals(self):
+        cover_path = self.audio_cover_path.get()
+        stego_path = self.audio_stego_path.get()
+        if cover_path:
+            self._draw_waveform(self.audio_canvas_cover, cover_path, "Cover")
+        if stego_path:
+            self._draw_waveform(self.audio_canvas_stego, stego_path, "Stego")
+            flips = self._calculate_lsb_flips(cover_path, stego_path, self.audio_num_lsbs.get())
+            self.audio_flip_label.config(text=f"LSB flips: {flips}")
+        else:
+            self.audio_canvas_stego.delete("all")
+            self.audio_flip_label.config(text="LSB flips: N/A")
+
+    def update_video_visuals(self):
+        cover_path = self.video_cover_path.get()
+        stego_path = self.video_stego_path.get()
+        if not cover_path:
+            return
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                cover_iframe = self._extract_first_iframe(cover_path, tmpdir, "cover_iframe.png")
+                self.display_image_on_canvas(cover_iframe, self.video_canvas_cover)
+                if stego_path:
+                    stego_iframe = self._extract_first_iframe(stego_path, tmpdir, "stego_iframe.png")
+                    self.display_image_on_canvas(stego_iframe, self.video_canvas_stego)
+                    diff_path = self._create_difference_map(cover_iframe, stego_iframe)
+                    self.display_image_on_canvas(diff_path, self.video_canvas_stego, overlay=True)
+                    flips = self._calculate_lsb_flips_image(cover_iframe, stego_iframe, self.video_num_lsbs.get())
+                    self.video_flip_label.config(text=f"LSB flips (first I-frame): {flips}")
+                else:
+                    self.video_canvas_stego.delete("all")
+                    self.video_flip_label.config(text="LSB flips: N/A")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to update visuals: {e}")
+
+    def _extract_first_iframe(self, video_path, tmpdir, output_name):
+        output_path = os.path.join(tmpdir, output_name)
+        subprocess.check_call(
+            ["ffmpeg", "-i", video_path, "-vf", "select='eq(pict_type\\,I)'", "-vsync", "vfr", "-frames:v", "1", output_path],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        return output_path
+
+    def _draw_waveform(self, canvas, audio_path, title):
+        canvas.delete("all")
+        try:
+            with wave.open(audio_path, 'rb') as wav:
+                params = wav.getparams()
+                frames = wav.readframes(params.nframes)
+                data = np.frombuffer(frames, dtype=np.int16 if params.sampwidth == 2 else np.int8)
+            width, height = canvas.winfo_width(), canvas.winfo_height()
+            canvas.create_text(width/2, 10, text=title)
+            if len(data) == 0:
+                return
+            step = max(1, len(data) // width)
+            max_amp = 2 ** (params.sampwidth * 8 - 1)
+            scale = (height - 20) / 2 / max_amp
+            mid = height / 2
+            for x in range(width):
+                chunk = data[x*step:(x+1)*step]
+                if len(chunk) > 0:
+                    amp = abs(chunk).max()
+                    y = amp * scale
+                    canvas.create_line(x, mid - y, x, mid + y)
+        except Exception:
+            pass
+
+    def _calculate_lsb_flips(self, cover_path, stego_path, num_lsbs):
+        try:
+            with wave.open(cover_path, 'rb') as c_wav, wave.open(stego_path, 'rb') as s_wav:
+                c_params = c_wav.getparams()
+                s_params = s_wav.getparams()
+                if c_params != s_params:
+                    return "N/A (mismatch)"
+                c_data = np.frombuffer(c_wav.readframes(c_params.nframes), dtype=np.int16 if c_params.sampwidth == 2 else np.int8)
+                s_data = np.frombuffer(s_wav.readframes(s_params.nframes), dtype=np.int16 if s_params.sampwidth == 2 else np.int8)
+            mask = (1 << num_lsbs) - 1
+            flips = np.sum((c_data & mask) != (s_data & mask))
+            return flips
+        except Exception:
+            return "N/A"
+
+    def _calculate_lsb_flips_image(self, cover_path, stego_path, num_lsbs):
+        try:
+            cover_img = Image.open(cover_path).convert('RGB')
+            stego_img = Image.open(stego_path).convert('RGB')
+            if cover_img.size != stego_img.size:
+                return "N/A (mismatch)"
+            width, height = cover_img.size
+            cp, sp = cover_img.load(), stego_img.load()
+            flips = 0
+            mask = (1 << num_lsbs) - 1
+            for y in range(height):
+                for x in range(width):
+                    for ch in range(3):
+                        if (cp[x, y][ch] & mask) != (sp[x, y][ch] & mask):
+                            flips += 1
+            return flips
+        except Exception:
+            return "N/A"
+
+    # -------------------- RUN ENCODE/DECODE --------------------
     def run_encode(self):
-        cover = self.cover_path.get()
+        cover_path = self.cover_path.get()
         key = self.secret_key.get()
+        num_lsbs = self.num_lsbs.get()
 
-        if not cover or not key:
-            messagebox.showerror("Error", "Please provide Cover Image and a Secret Key.")
+        if not cover_path:
+            messagebox.showerror("Error", "Please select a cover image.")
+            return
+        if not key:
+            messagebox.showerror("Error", "Please enter a secret key.")
             return
 
-        payload_type = self.payload_type.get()
-        if payload_type == "file":
-            payload = self.payload_path.get()
-            if not payload:
-                messagebox.showerror("Error", "Please select a Payload File.")
+        if self.payload_type.get() == "file":
+            payload_path = self.payload_path.get()
+            if not payload_path:
+                messagebox.showerror("Error", "Please select a payload file.")
                 return
-            try:
-                with open(payload, 'rb') as f:
-                    payload_data = f.read()
-                filename = os.path.basename(payload)
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to read payload file: {e}")
-                return
+            with open(payload_path, 'rb') as f:
+                payload_data = f.read()
+            filename = os.path.basename(payload_path)
         else:
-            payload_text = self.payload_text.get()
-            if not payload_text:
-                messagebox.showerror("Error", "Please enter text to encode.")
+            text = self.payload_text.get()
+            if not text:
+                messagebox.showerror("Error", "Please enter payload text.")
                 return
-            payload_data = payload_text.encode('utf-8')
+            payload_data = text.encode('utf-8')
             filename = "text_payload.txt"
 
         try:
-            stego_path = self._encode_image(cover, payload_data, filename, key, self.num_lsbs.get())
-            messagebox.showinfo("Success", f"✅ Payload embedded successfully!\n📁 Stego-image saved as:\n{stego_path}")
-
-            self.display_stego_image(stego_path)
-
-            if messagebox.askyesno("Visualization", "Show a difference map to visualize changes?"):
-                diff_map_path = self._create_difference_map(cover, stego_path)
-                self.display_stego_image(diff_map_path)
-
+            stego_path = self._encode_image(cover_path, payload_data, filename, key, num_lsbs)
+            self.stego_path.set(stego_path)
+            diff_path = self._create_difference_map(cover_path, stego_path)
+            self.display_image_on_canvas(stego_path, self.stego_canvas, label="Stego")
+            self.display_image_on_canvas(diff_path, self.stego_canvas, label="Diff", overlay=True)
+            messagebox.showinfo("Success", f"Stego image saved as: {stego_path}")
         except ValueError as e:
             messagebox.showerror("Encoding Error", str(e))
         except Exception as e:
             messagebox.showerror("Error", f"Unexpected error: {e}")
 
-    def display_stego_image(self, path):
-        try:
-            img = Image.open(path)
-            canvas_width = self.stego_canvas.winfo_width()
-            canvas_height = self.stego_canvas.winfo_height()
-            if canvas_width < 10:
-                canvas_width = 450
-                canvas_height = 450
-
-            img_width, img_height = img.size
-            aspect_ratio = min(canvas_width / img_width, canvas_height / img_height)
-            new_width = int(img_width * aspect_ratio)
-            new_height = int(img_height * aspect_ratio)
-            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-
-            self.stego_img = ImageTk.PhotoImage(img)
-            self.stego_canvas.delete("all")
-            self.stego_canvas.create_image(0, 0, anchor="nw", image=self.stego_img)
-            self.stego_canvas.config(scrollregion=(0, 0, new_width, new_height))
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to display stego image: {e}")
-
     def run_decode(self):
-        stego_path = filedialog.askopenfilename(
-            title="Select Stego-Image",
-            filetypes=[("Image files", "*.png *.bmp *.jpg *.jpeg *.gif")]
-        )
+        stego_path = filedialog.askopenfilename(title="Select Stego Image", filetypes=[("Image files", "*.png *.bmp *.jpg *.jpeg")])
         if not stego_path:
             return
 
@@ -1018,66 +1166,58 @@ class StegApp(TkinterDnD.Tk):
             result_text += f"⚙️ LSBs used: {self.num_lsbs.get()}\n"
             if is_text:
                 with open(extracted_path, 'r', encoding='utf-8') as f:
-                    result_text += f"\n📝 Extracted text:\n{f.read()[:1000]}"
+                    content = f.read()[:1000]
+                result_text += f"\n📝 Extracted text:\n{content}"
 
             self.decode_result.delete(1.0, tk.END)
             self.decode_result.insert(1.0, result_text)
 
-            if messagebox.askyesno("Success",
-                                   f"✅ Payload extracted!\n📁 Saved as: {os.path.basename(extracted_path)}\n\n🔍 Open now?"):
+            if messagebox.askyesno("Success", f"✅ Payload extracted!\n📁 Saved as: {os.path.basename(extracted_path)}\n\n🔍 Open now?"):
                 self.open_file(extracted_path)
 
-        except ValueError as e:
+        except Exception as e:
             error_text = f"❌ Failed to decode: {e}\n\n"
             error_text += "Please check:\n"
             error_text += "• Correct secret key\n"
             error_text += "• Same LSB settings as encoding\n"
-            error_text += "• Valid stego image\n"
+            error_text += "• Valid stego image file\n"
 
             self.decode_result.delete(1.0, tk.END)
             self.decode_result.insert(1.0, error_text)
             messagebox.showerror("Decoding Error", f"Failed to decode: {e}")
 
-    # -------------------- AUDIO ENCODE/DECODE --------------------
     def run_audio_encode(self):
-        cover = self.audio_cover_path.get()
+        cover_path = self.audio_cover_path.get()
         key = self.audio_secret_key.get()
+        num_lsbs = self.audio_num_lsbs.get()
 
-        if not cover or not key:
-            messagebox.showerror("Error", "Please provide Cover Audio File and a Secret Key.")
+        if not cover_path:
+            messagebox.showerror("Error", "Please select a cover audio file.")
+            return
+        if not key:
+            messagebox.showerror("Error", "Please enter a secret key.")
             return
 
-        payload_type = self.audio_payload_type.get()
-        if payload_type == "file":
-            payload = self.audio_payload_path.get()
-            if not payload:
-                messagebox.showerror("Error", "Please select a Payload File.")
+        if self.audio_payload_type.get() == "file":
+            payload_path = self.audio_payload_path.get()
+            if not payload_path:
+                messagebox.showerror("Error", "Please select a payload file.")
                 return
-            try:
-                with open(payload, 'rb') as f:
-                    payload_data = f.read()
-                filename = os.path.basename(payload)
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to read payload file: {e}")
-                return
+            with open(payload_path, 'rb') as f:
+                payload_data = f.read()
+            filename = os.path.basename(payload_path)
         else:
-            payload_text = self.audio_payload_text.get()
-            if not payload_text:
-                messagebox.showerror("Error", "Please enter text to encode.")
+            text = self.audio_payload_text.get()
+            if not text:
+                messagebox.showerror("Error", "Please enter payload text.")
                 return
-            payload_data = payload_text.encode('utf-8')
+            payload_data = text.encode('utf-8')
             filename = "text_payload.txt"
 
         try:
-            stego_path = self._encode_audio(cover, payload_data, filename, key, self.audio_num_lsbs.get())
-            messagebox.showinfo("Success", f"✅ Payload embedded successfully!\n🎵 Stego-audio saved as:\n{stego_path}")
-
-            # NEW: keep path for playback/visuals; enable buttons
+            stego_path = self._encode_audio(cover_path, payload_data, filename, key, num_lsbs)
             self.audio_stego_path.set(stego_path)
-            try:
-                self.btn_play_stego_enc.config(state=tk.NORMAL)
-            except Exception:
-                pass
+            self.btn_play_stego_enc.config(state=tk.NORMAL)
             try:
                 self.btn_play_stego_dec.config(state=tk.NORMAL)
             except Exception:
@@ -1138,6 +1278,199 @@ class StegApp(TkinterDnD.Tk):
             self.audio_decode_result.insert(1.0, error_text)
             messagebox.showerror("Decoding Error", f"Failed to decode: {e}")
 
+    def run_video_encode(self):
+        if shutil.which("ffmpeg") is None:
+            messagebox.showerror("Error", "FFmpeg not found. Please install FFmpeg to use video steganography.")
+            return
+
+        cover_path = self.video_cover_path.get()
+        key = self.video_secret_key.get()
+        num_lsbs = self.video_num_lsbs.get()
+
+        if not cover_path:
+            messagebox.showerror("Error", "Please select a cover video file.")
+            return
+        if not key:
+            messagebox.showerror("Error", "Please enter a secret key.")
+            return
+
+        if self.video_payload_type.get() == "file":
+            payload_path = self.video_payload_path.get()
+            if not payload_path:
+                messagebox.showerror("Error", "Please select a payload file.")
+                return
+            with open(payload_path, 'rb') as f:
+                payload_data = f.read()
+            filename = os.path.basename(payload_path)
+        else:
+            text = self.video_payload_text.get()
+            if not text:
+                messagebox.showerror("Error", "Please enter payload text.")
+                return
+            payload_data = text.encode('utf-8')
+            filename = "text_payload.txt"
+
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                # Extract first I-frame as PNG
+                iframe_path = os.path.join(tmpdir, "iframe.png")
+                subprocess.check_call(
+                    ["ffmpeg", "-i", cover_path, "-vf", "select='eq(pict_type\\,I)'", "-vsync", "vfr", "-frames:v", "1", iframe_path],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+                if not os.path.exists(iframe_path):
+                    raise ValueError("No I-frame found in video.")
+
+                # Embed payload into the I-frame using image method (full region)
+                stego_iframe = self._encode_image(iframe_path, payload_data, filename, key, num_lsbs)
+
+                # Get video params and frame duration
+                params = self.get_video_params(cover_path)
+                frame_duration = 1 / params['fps']
+                timestamp = self._get_first_iframe_timestamp(cover_path)
+
+                # Create short lossless video from stego I-frame
+                short_video = os.path.join(tmpdir, "short.mkv")  # Use MKV for FFV1 compatibility
+                subprocess.check_call(
+                    ["ffmpeg", "-y", "-loop", "1", "-i", stego_iframe, "-t", str(frame_duration), "-c:v", "ffv1", "-an", short_video],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+
+                # Prepare concat files
+                concat_file = os.path.join(tmpdir, "concat.txt")
+
+                if timestamp == 0:
+                    # First I-frame at start: concat short + rest
+                    rest_video = os.path.join(tmpdir, "rest.mkv")
+                    subprocess.check_call(
+                        ["ffmpeg", "-y", "-i", cover_path, "-ss", str(frame_duration), "-c:v", "ffv1", "-c:a", "copy", rest_video],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    )
+                    with open(concat_file, "w") as f:
+                        f.write(f"file '{short_video}'\nfile '{rest_video}'\n")
+                else:
+                    # First I-frame not at start: concat part1 + short + part2
+                    part1 = os.path.join(tmpdir, "part1.mkv")
+                    subprocess.check_call(
+                        ["ffmpeg", "-y", "-i", cover_path, "-t", str(timestamp), "-c:v", "ffv1", "-c:a", "copy", part1],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    )
+                    part2 = os.path.join(tmpdir, "part2.mkv")
+                    subprocess.check_call(
+                        ["ffmpeg", "-y", "-i", cover_path, "-ss", str(timestamp + frame_duration), "-c:v", "ffv1", "-c:a", "copy", part2],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    )
+                    with open(concat_file, "w") as f:
+                        f.write(f"file '{part1}'\nfile '{short_video}'\nfile '{part2}'\n")
+
+                # Concatenate to final stego video (output as MP4 for compatibility, but lossless)
+                stego_path = os.path.join(os.path.dirname(cover_path), "stego_" + os.path.basename(cover_path))
+                subprocess.check_call(
+                    ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_file, "-c", "copy", stego_path],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+
+            self.video_stego_path.set(stego_path)
+            self.btn_play_video_stego_enc.config(state=tk.NORMAL)
+
+            self.update_video_visuals()
+
+            messagebox.showinfo("Success", f"Stego video saved as: {stego_path}")
+
+        except subprocess.CalledProcessError:
+            messagebox.showerror("Error", "FFmpeg failed during processing.")
+        except ValueError as e:
+            messagebox.showerror("Encoding Error", str(e))
+        except Exception as e:
+            messagebox.showerror("Error", f"Unexpected error: {e}")
+
+    def _get_first_iframe_timestamp(self, video_path):
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "frame=pts_time,pict_type", "-of", "json", video_path],
+            capture_output=True, text=True
+        )
+        frames = json.loads(result.stdout).get("frames", [])
+        for f in frames:
+            if f.get("pict_type") == "I":
+                return float(f.get("pts_time", 0))
+        return 0.0
+
+    def run_video_decode(self):
+        if shutil.which("ffmpeg") is None:
+            messagebox.showerror("Error", "FFmpeg not found. Please install FFmpeg to use video steganography.")
+            return
+
+        stego_path = filedialog.askopenfilename(
+            title="Select Stego-Video File",
+            filetypes=[("MP4 files", "*.mp4")]
+        )
+        if not stego_path:
+            return
+
+        self.video_decode_stego_path.set(stego_path)
+
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                iframe_path = os.path.join(tmpdir, "stego_iframe.png")
+                subprocess.check_call(
+                    ["ffmpeg", "-i", stego_path, "-vf", "select='eq(pict_type\\,I)'", "-vsync", "vfr", "-frames:v", "1", iframe_path],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+                if not os.path.exists(iframe_path):
+                    raise ValueError("No I-frame found in video.")
+                self.display_image_on_canvas(iframe_path, self.video_stego_canvas_dec)
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to draw I-frame: {e}")
+
+        key = simpledialog.askstring("Input", "Enter the Secret Key:", show="*")
+        if not key:
+            messagebox.showerror("Error", "A valid key is required for decoding.")
+            return
+
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                iframe_path = os.path.join(tmpdir, "stego_iframe.png")
+                subprocess.check_call(
+                    ["ffmpeg", "-i", stego_path, "-vf", "select='eq(pict_type\\,I)'", "-vsync", "vfr", "-frames:v", "1", iframe_path],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+                extracted_path, is_text = self._decode_image(iframe_path, key, self.video_num_lsbs.get())
+
+                # Move extracted file to permanent location before temp dir deletion
+                permanent_dir = os.path.dirname(stego_path)
+                permanent_path = os.path.join(permanent_dir, os.path.basename(extracted_path))
+                shutil.move(extracted_path, permanent_path)
+                extracted_path = permanent_path
+
+            result_text = f"✅ Payload extracted successfully!\n\n"
+            result_text += f"📁 Extracted file: {extracted_path}\n"
+            result_text += f"📊 File size: {os.path.getsize(extracted_path)} bytes\n"
+            result_text += f"🔑 Key used: [Hidden]\n"
+            result_text += f"⚙️ LSBs used: {self.video_num_lsbs.get()}\n"
+            if is_text:
+                with open(extracted_path, 'r', encoding='utf-8') as f:
+                    result_text += f"\n📝 Extracted text:\n{f.read()[:1000]}"
+
+            self.video_decode_result.delete(1.0, tk.END)
+            self.video_decode_result.insert(1.0, result_text)
+
+            if messagebox.askyesno("Success",
+                                f"✅ Payload extracted!\n📁 Saved as: {os.path.basename(extracted_path)}\n\n🔍 Open now?"):
+                self.open_file(extracted_path)
+
+        except Exception as e:
+            error_text = f"❌ Failed to decode: {e}\n\n"
+            error_text += "Please check:\n"
+            error_text += "• Correct secret key\n"
+            error_text += "• Same LSB settings as encoding\n"
+            error_text += "• Valid stego video file with I-frames\n"
+
+            self.video_decode_result.delete(1.0, tk.END)
+            self.video_decode_result.insert(1.0, error_text)
+            messagebox.showerror("Decoding Error", f"Failed to decode: {e}")
+
     # -------------------- CLEAR / CAPACITY / OPEN --------------------
     def clear_audio_all(self):
         self.stop_audio()
@@ -1176,6 +1509,45 @@ class StegApp(TkinterDnD.Tk):
         # disable stego button on encode tab
         try:
             self.btn_play_stego_enc.config(state=tk.DISABLED)
+        except Exception:
+            pass
+
+    def clear_video_all(self):
+        self.video_cover_path.set("")
+        self.video_payload_path.set("")
+        self.video_stego_path.set("")
+        self.video_decode_stego_path.set("")
+        self.video_secret_key.set("")
+        self.video_num_lsbs.set(1)
+        self.video_payload_type.set("file")
+        self.video_payload_text.set("")
+        self.video_capacity_label.config(text="Capacity: N/A")
+        self.video_info_label.config(text="Select a video file to view information")
+        self.show_video_key.set(False)
+        try:
+            self.video_key_entry.config(show="*")
+        except Exception:
+            pass
+
+        self.video_cover_drop_zone.update_text("Drag & Drop Cover Video File Here\n(MP4 format)")
+        self.video_payload_drop_zone.update_text("Drag & Drop Payload File Here\n(Any file type)")
+        self.video_cover_drop_zone.reset_colors()
+        self.video_payload_drop_zone.reset_colors()
+        self.video_payload_text_area.delete("1.0", tk.END)
+        self.toggle_video_payload_input()
+
+        # clear visuals
+        if hasattr(self, 'video_canvas_cover'):
+            self.video_canvas_cover.delete("all")
+        if hasattr(self, 'video_canvas_stego'):
+            self.video_canvas_stego.delete("all")
+        if hasattr(self, 'video_stego_canvas_dec'):
+            self.video_stego_canvas_dec.delete("all")
+        self.video_flip_label.config(text="LSB flips: N/A")
+
+        # disable stego button
+        try:
+            self.btn_play_video_stego_enc.config(state=tk.DISABLED)
         except Exception:
             pass
 
@@ -1578,6 +1950,23 @@ class StegApp(TkinterDnD.Tk):
         except Exception:
             return None
 
+    def calculate_required_lsbs_video(self, video_path, payload_size):
+        if not video_path or not os.path.exists(video_path):
+            return None
+        try:
+            params = self.get_video_params(video_path)
+            width, height = params['width'], params['height']
+            total_pixels = 1 * width * height * 3  # First I-frame only
+            filename = "text_payload.txt" if self.video_payload_type.get() == "text" else os.path.basename(self.video_payload_path.get())
+            metadata_size = 9 + len(filename)  # bytes
+            total_bits_needed = (payload_size + metadata_size) * 8
+            if total_pixels == 0:
+                return None
+            required_lsbs = math.ceil(total_bits_needed / total_pixels)
+            return min(max(1, required_lsbs), 8)
+        except Exception:
+            return None
+
     def update_capacity_display(self, *args):
         cover_path = self.cover_path.get()
         if not cover_path or not os.path.exists(cover_path):
@@ -1632,6 +2021,33 @@ class StegApp(TkinterDnD.Tk):
         except Exception:
             self.audio_capacity_label.config(text="Capacity: Error")
 
+    def update_video_capacity_display(self, *args):
+        video_path = self.video_cover_path.get()
+        if not video_path or not os.path.exists(video_path):
+            self.video_capacity_label.config(text="Capacity: Select a video file")
+            return
+        try:
+            capacity_bytes = self._calculate_video_capacity(video_path, self.video_num_lsbs.get())
+            capacity_kb = capacity_bytes / 1024
+
+            payload_size = 0
+            if self.video_payload_type.get() == "file" and self.video_payload_path.get():
+                try:
+                    payload_size = os.path.getsize(self.video_payload_path.get())
+                except:
+                    payload_size = 0
+            elif self.video_payload_type.get() == "text" and self.video_payload_text.get():
+                payload_size = len(self.video_payload_text.get().encode('utf-8'))
+
+            recommended_lsbs = self.calculate_required_lsbs_video(video_path, payload_size)
+
+            if recommended_lsbs is not None:
+                self.video_capacity_label.config(text=f"Capacity: {capacity_kb:.2f} KB\nRecommended LSBs: {recommended_lsbs}")
+            else:
+                self.video_capacity_label.config(text=f"Capacity: {capacity_kb:.2f} KB\nRecommended LSBs: N/A (Select payload)")
+        except Exception:
+            self.video_capacity_label.config(text="Capacity: Error")
+
     def _calculate_capacity(self, image_path, num_lsbs, region=None):
         image = Image.open(image_path)
         width, height = image.size
@@ -1652,7 +2068,89 @@ class StegApp(TkinterDnD.Tk):
             return max_bits // 8
         except Exception:
             return 0
-        
+
+    def _calculate_video_capacity(self, video_path, num_lsbs):
+        try:
+            params = self.get_video_params(video_path)
+            width, height = params['width'], params['height']
+            total_pixels = 1 * width * height * 3  # First I-frame only
+            max_bits = total_pixels * num_lsbs
+            return max_bits // 8
+        except Exception:
+            return 0
+
+    def _create_difference_map(self, cover_path, stego_path):
+        cover_img = Image.open(cover_path).convert('RGB')
+        stego_img = Image.open(stego_path).convert('RGB')
+        if cover_img.size != stego_img.size:
+            raise ValueError("Images must have the same dimensions")
+        width, height = cover_img.size
+        diff_img = Image.new('RGB', (width, height))
+        cp, sp, dp = cover_img.load(), stego_img.load(), diff_img.load()
+        for y in range(height):
+            for x in range(width):
+                dp[x, y] = (255, 0, 0) if cp[x, y] != sp[x, y] else (0, 0, 0)
+        diff_path = os.path.join(os.path.dirname(cover_path), "difference_map.png")
+        diff_img.save(diff_path)
+        return diff_path
+
+    # -------------------- IMAGE DISPLAY / SELECTION --------------------
+    def display_image_on_canvas(self, path, canvas, label=None, overlay=False):
+        if not overlay:
+            canvas.delete("all")
+        try:
+            img = Image.open(path)
+            img.thumbnail((450, 450))
+            photo = ImageTk.PhotoImage(img)
+            canvas.create_image(0, 0, anchor=tk.NW, image=photo)
+            canvas.image = photo
+            if label:
+                canvas.create_text(10, 10, anchor=tk.NW, text=label, fill="white", font=('Helvetica', 10, 'bold'))
+        except Exception:
+            pass
+
+    def setup_canvas_bindings(self):
+        self.cover_canvas.bind("<ButtonPress-1>", self.on_press)
+        self.cover_canvas.bind("<B1-Motion>", self.on_drag)
+        self.cover_canvas.bind("<ButtonRelease-1>", self.on_release)
+
+    def on_press(self, event):
+        self.start_x = self.cover_canvas.canvasx(event.x)
+        self.start_y = self.cover_canvas.canvasy(event.y)
+        if hasattr(self, 'rect'):
+            self.cover_canvas.delete(self.rect)
+        self.rect = self.cover_canvas.create_rectangle(self.start_x, self.start_y, self.start_x, self.start_y, outline='red', width=2)
+
+    def on_drag(self, event):
+        cur_x = self.cover_canvas.canvasx(event.x)
+        cur_y = self.cover_canvas.canvasy(event.y)
+        self.cover_canvas.coords(self.rect, self.start_x, self.start_y, cur_x, cur_y)
+
+    def on_release(self, event):
+        self.update_capacity_display()
+
+    def get_embed_region_in_original(self):
+        if not hasattr(self, 'rect'):
+            return None
+        x1, y1, x2, y2 = self.cover_canvas.coords(self.rect)
+        if x1 == x2 or y1 == y2:
+            return None
+        # Scale back to original image size
+        orig_img = Image.open(self.cover_path.get())
+        orig_w, orig_h = orig_img.size
+        canv_w, canv_h = 450, 450  # thumbnail size
+        scale_x = orig_w / canv_w
+        scale_y = orig_h / canv_h
+        return (min(x1, x2) * scale_x, min(y1, y2) * scale_y, max(x1, x2) * scale_x, max(y1, y2) * scale_y)
+
+    def clear_selection(self):
+        if hasattr(self, 'rect'):
+            self.cover_canvas.delete(self.rect)
+            del self.rect
+        self.update_capacity_display()
+
+     # -------------------- ANALYSIS TAB --------------------
+    
     def setup_analysis_tab(self, parent):
         container = tk.Frame(parent, bg='#f5f5f5')
         container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -2403,21 +2901,11 @@ class StegApp(TkinterDnD.Tk):
         except Exception as e:
             messagebox.showerror("Load Error", f"Failed to load report:\n{e}")
 
-
-    def _create_difference_map(self, cover_path, stego_path):
-        cover_img = Image.open(cover_path).convert('RGB')
-        stego_img = Image.open(stego_path).convert('RGB')
-        if cover_img.size != stego_img.size:
-            raise ValueError("Images must have the same dimensions")
-        width, height = cover_img.size
-        diff_img = Image.new('RGB', (width, height))
-        cp, sp, dp = cover_img.load(), stego_img.load(), diff_img.load()
-        for y in range(height):
-            for x in range(width):
-                dp[x, y] = (255, 0, 0) if cp[x, y] != sp[x, y] else (0, 0, 0)
-        diff_path = os.path.join(os.path.dirname(cover_path), "difference_map.png")
-        diff_img.save(diff_path)
-        return diff_path
+    # -------------------- HASH KEY --------------------
+    def hash_key(self, key):
+        h = hashlib.sha256(key.encode()).digest()
+        seed = int.from_bytes(h[:8], 'big')
+        return h, seed
 
 
 if __name__ == "__main__":

@@ -126,6 +126,14 @@ class StegApp(TkinterDnD.Tk):
         audio_decode_frame = ttk.Frame(notebook)
         notebook.add(audio_decode_frame, text="Audio Decode")
 
+        analysis_frame = ttk.Frame(notebook)
+        notebook.add(analysis_frame, text="Image Analysis")
+
+        audio_analysis_frame = ttk.Frame(notebook)
+        notebook.add(audio_analysis_frame, text="Audio Analysis")
+        
+        self.setup_audio_analysis_tab(audio_analysis_frame)
+        self.setup_analysis_tab(analysis_frame)
         self.setup_encode_tab(encode_frame)
         self.setup_decode_tab(decode_frame)
         self.setup_audio_encode_tab(audio_encode_frame)
@@ -1644,6 +1652,776 @@ class StegApp(TkinterDnD.Tk):
             return max_bits // 8
         except Exception:
             return 0
+        
+    def setup_analysis_tab(self, parent):
+        container = tk.Frame(parent, bg='#f5f5f5')
+        container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # ---- File pickers ----
+        pickers = tk.LabelFrame(container, text="Select Image(s) to Analyze", bg='#f5f5f5', padx=10, pady=10)
+        pickers.pack(fill=tk.X)
+
+        self.analysis_image_path = tk.StringVar()
+        self.analysis_cover_hint_path = tk.StringVar()
+
+        row1 = tk.Frame(pickers, bg='#f5f5f5'); row1.pack(fill=tk.X, pady=3)
+        tk.Label(row1, text="Suspected Stego Image:", bg='#f5f5f5').pack(side=tk.LEFT)
+        tk.Entry(row1, textvariable=self.analysis_image_path, state='readonly').pack(side=tk.LEFT, fill=tk.X, expand=True, padx=8)
+        tk.Button(row1, text="Browse", command=self.browse_analysis_image, bg='#2196F3', fg='white').pack(side=tk.LEFT)
+
+        row2 = tk.Frame(pickers, bg='#f5f5f5'); row2.pack(fill=tk.X, pady=3)
+        tk.Label(row2, text="(Optional) Original Cover for Diff:", bg='#f5f5f5').pack(side=tk.LEFT)
+        tk.Entry(row2, textvariable=self.analysis_cover_hint_path, state='readonly').pack(side=tk.LEFT, fill=tk.X, expand=True, padx=8)
+        tk.Button(row2, text="Browse", command=self.browse_analysis_cover_hint, bg='#607D8B', fg='white').pack(side=tk.LEFT)
+
+        # ---- Run / Info ----
+        actions = tk.Frame(container, bg='#f5f5f5'); actions.pack(fill=tk.X, pady=8)
+        tk.Button(actions, text="🔍 Run Stego Analysis", command=self.run_image_analysis, bg='#4CAF50', fg='white', font=('Helvetica', 11, 'bold')).pack(side=tk.LEFT, padx=4)
+        tk.Button(actions, text="🗑️ Clear", command=self.clear_analysis_ui, bg='#FF9800', fg='white').pack(side=tk.LEFT, padx=4)
+
+        # ---- Results (text) ----
+        self.analysis_text = tk.Text(container, height=10, bg='#f8f8f8', relief=tk.SUNKEN, bd=2, font=('Consolas', 10))
+        self.analysis_text.pack(fill=tk.X, pady=6)
+
+        # ---- Visuals ----
+        viz = tk.LabelFrame(container, text="Visual Diagnostics", bg='#f5f5f5', padx=10, pady=10)
+        viz.pack(fill=tk.BOTH, expand=True)
+
+        # Four image slots: LSB plane, Heatmap, Hist, DiffAmp
+        grid = tk.Frame(viz, bg='#f5f5f5'); grid.pack(fill=tk.BOTH, expand=True)
+
+        self.viz_lsb_label = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2, width=50, height=18)
+        self.viz_heat_label = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2, width=50, height=18)
+        self.viz_hist_label = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2, width=50, height=18)
+        self.viz_diff_label = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2, width=50, height=18)
+
+        self.viz_lsb_label.grid(row=0, column=0, padx=5, pady=5, sticky='nsew')
+        self.viz_heat_label.grid(row=0, column=1, padx=5, pady=5, sticky='nsew')
+        self.viz_hist_label.grid(row=1, column=0, padx=5, pady=5, sticky='nsew')
+        self.viz_diff_label.grid(row=1, column=1, padx=5, pady=5, sticky='nsew')
+
+        grid.grid_columnconfigure(0, weight=1)
+        grid.grid_columnconfigure(1, weight=1)
+        grid.grid_rowconfigure(0, weight=1)
+        grid.grid_rowconfigure(1, weight=1)
+
+    def browse_analysis_image(self):
+        path = filedialog.askopenfilename(title="Select Image", filetypes=[("Image files", "*.png *.bmp *.jpg *.jpeg *.gif")])
+        if path:
+            self.analysis_image_path.set(path)
+
+    def browse_analysis_cover_hint(self):
+        path = filedialog.askopenfilename(title="Select Original Cover (optional)", filetypes=[("Image files", "*.png *.bmp *.jpg *.jpeg *.gif")])
+        if path:
+            self.analysis_cover_hint_path.set(path)
+
+    def clear_analysis_ui(self):
+        self.analysis_image_path.set("")
+        self.analysis_cover_hint_path.set("")
+        self.analysis_text.delete(1.0, tk.END)
+        for lbl in (self.viz_lsb_label, self.viz_heat_label, self.viz_hist_label, self.viz_diff_label):
+            lbl.configure(image='', text="")
+            lbl.image = None
+
+    def run_image_analysis(self):
+        path = self.analysis_image_path.get().strip()
+        if not path:
+            messagebox.showerror("Error", "Select a suspected stego image first.")
+            return
+
+        try:
+            img = Image.open(path).convert('RGB')
+            arr = np.array(img, dtype=np.uint8)
+
+            # Metrics
+            chi_p = self._chi_square_lsb_pvalue(arr)
+            corr = self._neighbor_correlation(arr)
+            lsb_ratio = self._lsb_one_ratio(arr)
+            heat = self._lsb_variance_heatmap(arr, block=8)  # 8x8 blocks
+
+            # Visuals
+            lsb_img = self._render_lsb_plane(arr)                   # grayscale LSB map
+            hist_img = self._render_histograms(arr)                 # simple RGB hist
+            heat_img = self._render_heatmap_image(heat, img.size)   # upscaled for display
+
+            # Diff amplification (needs optional original)
+            diff_img = None
+            cover_hint = self.analysis_cover_hint_path.get().strip()
+            if cover_hint and os.path.exists(cover_hint):
+                diff_img = self._render_diff_amplified(Image.open(cover_hint).convert('RGB'), img, factor=16)
+
+            # Put text report
+            report = []
+            report.append("Steganalysis Report\n-------------------")
+            report.append(f"Image: {os.path.basename(path)}  |  {img.size[0]}×{img.size[1]}  |  RGB")
+            report.append(f"Chi-square LSB p-value (higher ~ more random LSBs): {chi_p:.4f}")
+            report.append(f"Neighbor correlation (0..1). Natural images ~0.90–0.99: {corr:.4f}")
+            report.append(f"LSB(1-bit) ones ratio (should be near 0.5): {lsb_ratio:.4f}")
+            report.append("Heatmap: bright regions = higher LSB variability (possible embedding zones)\n")
+            self.analysis_text.delete(1.0, tk.END)
+            self.analysis_text.insert(1.0, "\n".join(report))
+
+            # Display images
+            def _to_tk(im, max_wh=(450, 450)):
+                imc = im.copy()
+                imc.thumbnail(max_wh)
+                tkimg = ImageTk.PhotoImage(imc)
+                return tkimg
+
+            lsb_tk = _to_tk(lsb_img); self.viz_lsb_label.configure(image=lsb_tk); self.viz_lsb_label.image = lsb_tk
+            heat_tk = _to_tk(heat_img); self.viz_heat_label.configure(image=heat_tk); self.viz_heat_label.image = heat_tk
+            hist_tk = _to_tk(hist_img); self.viz_hist_label.configure(image=hist_tk); self.viz_hist_label.image = hist_tk
+
+            if diff_img is not None:
+                diff_tk = _to_tk(diff_img)
+                self.viz_diff_label.configure(image=diff_tk); self.viz_diff_label.image = diff_tk
+            else:
+                self.viz_diff_label.configure(image='', text="(Optional) Provide cover to see amplified difference")
+
+        except Exception as e:
+            messagebox.showerror("Analysis Error", str(e))
+
+    def _lsb_one_ratio(self, arr):
+        # Combine all channels; ratio of LSB=1
+        lsb = arr & 1
+        ones = np.count_nonzero(lsb)
+        total = lsb.size
+        return ones / max(total, 1)
+
+    def _chi_square_lsb_pvalue(self, arr):
+        """
+        Chi-square test on LSBs across all channels.
+        H0: LSBs are fair (0/1 equally likely).
+        Returns an approximate p-value without scipy.
+        """
+        lsb = (arr & 1).ravel()
+        n = lsb.size
+        c1 = np.count_nonzero(lsb)           # observed ones
+        c0 = n - c1                          # observed zeros
+        expected = n / 2.0
+        # Chi-square with 1 df
+        chi = ((c0 - expected)**2 / expected) + ((c1 - expected)**2 / expected)
+        # Approx p from survival function of chi2 with df=1: p ≈ exp(-chi/2) * sqrt(2/ (pi*chi)) for chi>0
+        # Use a robust fallback for very small chi
+        if chi <= 1e-12:
+            return 1.0
+        # Wilson-Hilferty approx or a simple tail approx:
+        # We'll use a tight approximation: p ≈ erfc( sqrt(chi/2) ) but we don't have erfc -> use exp bound
+        # A simple monotonic surrogate:
+        from math import exp
+        # Lower bound-ish (conservative): p_lower ≈ exp(-chi/2)
+        p = exp(-chi / 2.0)
+        return min(max(p, 0.0), 1.0)
+
+    def _neighbor_correlation(self, arr):
+        """
+        Pearson correlation between neighboring horizontal pixels over all channels.
+        """
+        # Convert to luminance to be channel-agnostic
+        R, G, B = arr[:,:,0].astype(np.float32), arr[:,:,1].astype(np.float32), arr[:,:,2].astype(np.float32)
+        Y = 0.299*R + 0.587*G + 0.114*B
+        # pairs (x, x+1)
+        X = Y[:, :-1].ravel()
+        Ynext = Y[:, 1:].ravel()
+        if X.size < 2:
+            return 0.0
+        Xm, Ym = X.mean(), Ynext.mean()
+        num = np.sum((X - Xm)*(Ynext - Ym))
+        den = np.sqrt(np.sum((X - Xm)**2) * np.sum((Ynext - Ym)**2))
+        if den == 0:
+            return 0.0
+        return float(num/den)
+
+    def _lsb_variance_heatmap(self, arr, block=8):
+        """
+        Compute per-block variance of LSBs (across channels) -> high = suspicious.
+        Returns a (H/block, W/block) float array normalized to 0..1.
+        """
+        H, W, _ = arr.shape
+        lsb = (arr & 1).sum(axis=2)  # 0..3 per pixel
+        h_blocks, w_blocks = H // block, W // block
+        if h_blocks == 0 or w_blocks == 0:
+            return np.zeros((1,1), dtype=np.float32)
+        heat = np.zeros((h_blocks, w_blocks), dtype=np.float32)
+        for by in range(h_blocks):
+            for bx in range(w_blocks):
+                tile = lsb[by*block:(by+1)*block, bx*block:(bx+1)*block].ravel()
+                # normalize to 0..1 by dividing by 3
+                tile01 = tile / 3.0
+                v = float(tile01.var())
+                heat[by, bx] = v
+        # normalize heat 0..1
+        if heat.max() > 0:
+            heat = heat / heat.max()
+        return heat
+
+    def _render_lsb_plane(self, arr):
+        """
+        Show LSB plane (combined RGB). Brighter = LSB=1 more frequently across channels.
+        """
+        lsb_sum = (arr & 1).sum(axis=2) * 85  # 0..3 -> 0..255
+        img = Image.fromarray(lsb_sum.astype(np.uint8), mode='L').convert('RGB')
+        return img
+
+    def _render_heatmap_image(self, heat, size):
+        """
+        Upscale small heat array to image size with a simple grayscale colormap.
+        """
+        h_norm = (heat*255.0).clip(0,255).astype(np.uint8)
+        hm = Image.fromarray(h_norm, mode='L').resize(size, Image.NEAREST).convert('RGB')
+        return hm
+
+    def _render_histograms(self, arr):
+        """
+        Quick RGB histogram render (256x100 per channel stacked).
+        """
+        H, W = 100, 256
+        canvas = Image.new('RGB', (W, H*3), (240,240,240))
+        for i, ch in enumerate([0,1,2]):
+            hist = np.bincount(arr[:,:,ch].ravel(), minlength=256).astype(np.float32)
+            if hist.max() > 0: hist /= hist.max()
+            hist_h = (hist * (H-1)).astype(np.int32)
+            layer = Image.new('RGB', (W, H), (255,255,255))
+            px = layer.load()
+            for x in range(256):
+                h = hist_h[x]
+                for y in range(H-1, H-1-h, -1):
+                    # draw a vertical bar
+                    px[x, y] = (50,50,50)
+            canvas.paste(layer, (0, i*H))
+        return canvas
+
+    def _render_diff_amplified(self, cover_img, stego_img, factor=16):
+        """
+        |stego - cover| * factor, clipped, to reveal subtle embedding patterns.
+        """
+        if cover_img.size != stego_img.size:
+            # fallback: resize cover to stego just for visualization
+            cover_img = cover_img.resize(stego_img.size, Image.BILINEAR)
+        c = np.array(cover_img, dtype=np.int16)
+        s = np.array(stego_img, dtype=np.int16)
+        d = np.clip(np.abs(s - c) * factor, 0, 255).astype(np.uint8)
+        return Image.fromarray(d, mode='RGB')
+
+    def setup_audio_analysis_tab(self, parent):
+        container = tk.Frame(parent, bg='#f5f5f5')
+        container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        picks = tk.LabelFrame(container, text="Select WAV(s) to Analyze", bg='#f5f5f5', padx=10, pady=10)
+        picks.pack(fill=tk.X)
+
+        self.an_audio_path = tk.StringVar()
+        self.an_audio_cover_hint = tk.StringVar()
+        self.an_audio_lsbs = tk.IntVar(value=1)  # assumed LSBs for analysis view (1–4 is common)
+
+        r1 = tk.Frame(picks, bg='#f5f5f5'); r1.pack(fill=tk.X, pady=3)
+        tk.Label(r1, text="Suspected Stego WAV:", bg='#f5f5f5').pack(side=tk.LEFT)
+        tk.Entry(r1, textvariable=self.an_audio_path, state='readonly').pack(side=tk.LEFT, fill=tk.X, expand=True, padx=8)
+        tk.Button(r1, text="Browse", command=self._an_browse_audio, bg='#2196F3', fg='white').pack(side=tk.LEFT)
+
+        r2 = tk.Frame(picks, bg='#f5f5f5'); r2.pack(fill=tk.X, pady=3)
+        tk.Label(r2, text="(Optional) Original Cover WAV:", bg='#f5f5f5').pack(side=tk.LEFT)
+        tk.Entry(r2, textvariable=self.an_audio_cover_hint, state='readonly').pack(side=tk.LEFT, fill=tk.X, expand=True, padx=8)
+        tk.Button(r2, text="Browse", command=self._an_browse_audio_cover, bg='#607D8B', fg='white').pack(side=tk.LEFT)
+
+        r3 = tk.Frame(picks, bg='#f5f5f5'); r3.pack(fill=tk.X, pady=6)
+        tk.Label(r3, text="Assumed LSBs for Analysis:", bg='#f5f5f5').pack(side=tk.LEFT)
+        tk.Scale(r3, from_=1, to=8, orient=HORIZONTAL, variable=self.an_audio_lsbs, bg='#f5f5f5', length=200).pack(side=tk.LEFT, padx=10)
+
+        actions = tk.Frame(container, bg='#f5f5f5'); actions.pack(fill=tk.X, pady=8)
+        tk.Button(actions, text="🔎 Run Audio Analysis", command=self.run_audio_stego_analysis,
+                bg='#4CAF50', fg='white', font=('Helvetica', 11, 'bold')).pack(side=tk.LEFT, padx=4)
+        tk.Button(actions, text="💾 Save Report", command=self._an_save_report,
+                bg='#3F51B5', fg='white').pack(side=tk.LEFT, padx=4)
+        tk.Button(actions, text="📂 Load Report", command=self._an_load_report,
+                bg='#009688', fg='white').pack(side=tk.LEFT, padx=4)
+        tk.Button(actions, text="🗑️ Clear", command=self._an_clear_ui, bg='#FF9800', fg='white').pack(side=tk.LEFT, padx=4)
+
+        self.an_audio_text = tk.Text(container, height=10, bg='#f8f8f8', relief=tk.SUNKEN, bd=2, font=('Consolas', 10))
+        self.an_audio_text.pack(fill=tk.X, pady=6)
+
+        viz = tk.LabelFrame(container, text="Visual Diagnostics", bg='#f5f5f5', padx=10, pady=10)
+        viz.pack(fill=tk.BOTH, expand=True)
+        grid = tk.Frame(viz, bg='#f5f5f5'); grid.pack(fill=tk.BOTH, expand=True)
+
+        self.viz_wave = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2, width=50, height=18)
+        self.viz_spec = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2, width=50, height=18)
+        self.viz_lsbvar = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2, width=50, height=18)
+        self.viz_diffaudio = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2, width=50, height=18)
+
+        self.viz_wave.grid(row=0, column=0, padx=5, pady=5, sticky='nsew')
+        self.viz_spec.grid(row=0, column=1, padx=5, pady=5, sticky='nsew')
+        self.viz_lsbvar.grid(row=1, column=0, padx=5, pady=5, sticky='nsew')
+        self.viz_diffaudio.grid(row=1, column=1, padx=5, pady=5, sticky='nsew')
+
+        grid.grid_columnconfigure(0, weight=1)
+        grid.grid_columnconfigure(1, weight=1)
+        grid.grid_rowconfigure(0, weight=1)
+        grid.grid_rowconfigure(1, weight=1)
+
+    def _an_browse_audio(self):
+        path = filedialog.askopenfilename(title="Select WAV", filetypes=[("WAV files", "*.wav")])
+        if path: self.an_audio_path.set(path)
+
+    def _an_browse_audio_cover(self):
+        path = filedialog.askopenfilename(title="Select Original Cover WAV", filetypes=[("WAV files", "*.wav")])
+        if path: self.an_audio_cover_hint.set(path)
+
+    def _an_clear_ui(self):
+        self.an_audio_path.set("")
+        self.an_audio_cover_hint.set("")
+        self.an_audio_lsbs.set(1)
+        self.an_audio_text.delete(1.0, tk.END)
+        for lbl in (self.viz_wave, self.viz_spec, self.viz_lsbvar, self.viz_diffaudio):
+            lbl.configure(image='', text="")
+            lbl.image = None
+
+    def run_audio_stego_analysis(self):
+        path = self.an_audio_path.get().strip()
+        if not path:
+            messagebox.showerror("Error", "Select a WAV file to analyze.")
+            return
+
+        try:
+            # Load samples
+            params, samples = self._wav_read_any(path)  # (N,C)
+            N, C = samples.shape
+            lsbs = max(1, min(int(self.an_audio_lsbs.get()), 8))
+
+            # Main metrics for chosen LSBs
+            chi_p_overall, chi_p_ch = self._chi_square_lsb_audio(samples, lsbs)
+            corr_overall, corr_ch = self._neighbor_corr_audio(samples)
+            lsb_ratio_overall, lsb_ratio_ch = self._lsb_ratio_audio(samples, lsbs)
+            lsb_var_series = self._lsb_block_variance_1d(samples, lsbs, block=2048)
+            lsb_var_mean = float(lsb_var_series.mean()) if lsb_var_series.size else 0.0
+
+            # Optional difference image
+            diff_img = None
+            cover_path = self.an_audio_cover_hint.get().strip()
+            if cover_path and os.path.exists(cover_path):
+                _, cover_samples = self._wav_read_any(cover_path)
+                diff_img = self._render_audio_diff(cover_samples, samples)
+
+            # Visuals
+            wave_img = self._render_waveform(samples)
+            spec_img = self._render_spectrogram(samples[:,0])
+            lsbvar_img = self._render_lsb_var_bar(lsb_var_series)
+
+            # -------- Auto-detect 1..4 LSBs --------
+            autodet = []
+            for d in range(1, min(lsbs, 8) + 1):
+                chi_p_o, _ = self._chi_square_lsb_audio(samples, d)
+                _, corr_ch_tmp = self._neighbor_corr_audio(samples)
+                corr_o = float(np.mean(corr_ch_tmp)) if corr_ch_tmp else 0.0
+                lsb_ratio_o, _ = self._lsb_ratio_audio(samples, d)
+                series = self._lsb_block_variance_1d(samples, d, block=2048)
+                var_mean = float(series.mean()) if series.size else 0.0
+                score = self._score_stegoish(chi_p_o, corr_o, lsb_ratio_o, var_mean)
+                autodet.append({
+                    "lsbs": d,
+                    "chi_p": float(chi_p_o),
+                    "corr": float(corr_o),
+                    "lsb_ratio": float(lsb_ratio_o),
+                    "lsb_var_mean": float(var_mean),
+                    "score": float(score),
+                })
+            best = max(autodet, key=lambda z: z["score"]) if autodet else None
+
+            # Report text
+            sr = params.framerate
+            dur = N / float(sr) if sr else 0.0
+            rep = []
+            rep.append("Audio Steganalysis Report")
+            rep.append("--------------------------")
+            rep.append(f"File: {os.path.basename(path)}  |  {sr} Hz, {params.nchannels} ch, {8*params.sampwidth}-bit, {dur:.2f}s")
+            rep.append(f"Assumed analysis LSBs: {lsbs}")
+            rep.append("")
+            rep.append(f"Chi-square LSB p-value (overall): {chi_p_overall:.4f}")
+            for c in range(C): rep.append(f"  - ch{c+1}: {chi_p_ch[c]:.4f}")
+            rep.append(f"Neighbor correlation (overall): {corr_overall:.4f}")
+            for c in range(C): rep.append(f"  - ch{c+1}: {corr_ch[c]:.4f}")
+            rep.append(f"LSB ones-ratio (overall): {lsb_ratio_overall:.4f}")
+            for c in range(C): rep.append(f"  - ch{c+1}: {lsb_ratio_ch[c]:{'.4f'}}")
+            rep.append(f"Mean LSB variance (blocks): {lsb_var_mean:.4f}")
+            rep.append("")
+            rep.append("Auto-detect (scan LSB=1..4): higher score = more 'stego-ish'")
+            for row in autodet:
+                rep.append(f"  LSBs={row['lsbs']}: score={row['score']:.3f} | chi_p={row['chi_p']:.4f} corr={row['corr']:.4f} lsb_ratio={row['lsb_ratio']:.4f} var={row['lsb_var_mean']:.4f}")
+            if best:
+                rep.append(f"→ Likely LSB depth: {best['lsbs']} (score {best['score']:.3f})")
+            rep.append("\nLSB variance over time blocks: brighter = more variability (possible embedding zones)")
+            self.an_audio_text.delete(1.0, tk.END)
+            self.an_audio_text.insert(1.0, "\n".join(rep))
+
+            # Display images
+            def _to_tk(im, max_wh=(450, 450)):
+                imc = im.copy(); imc.thumbnail(max_wh)
+                return ImageTk.PhotoImage(imc)
+
+            wtk = _to_tk(wave_img); self.viz_wave.configure(image=wtk); self.viz_wave.image = wtk
+            stk = _to_tk(spec_img); self.viz_spec.configure(image=stk); self.viz_spec.image = stk
+            vtk = _to_tk(lsbvar_img); self.viz_lsbvar.configure(image=vtk); self.viz_lsbvar.image = vtk
+
+            if diff_img is not None:
+                dtk = _to_tk(diff_img); self.viz_diffaudio.configure(image=dtk); self.viz_diffaudio.image = dtk
+            else:
+                self.viz_diffaudio.configure(image='', text="(Optional) Provide cover WAV to see difference spikes")
+
+            # -------- persist a JSON-ready report for Save --------
+            self._last_audio_report = {
+                "file": path,
+                "cover_hint": cover_path if cover_path else None,
+                "samplerate": int(sr),
+                "channels": int(params.nchannels),
+                "bitdepth": int(8*params.sampwidth),
+                "duration_sec": float(dur),
+                "assumed_lsbs": int(lsbs),
+                "metrics": {
+                    "chi_p_overall": float(chi_p_overall),
+                    "chi_p_per_channel": [float(v) for v in chi_p_ch],
+                    "corr_overall": float(corr_overall),
+                    "corr_per_channel": [float(v) for v in corr_ch],
+                    "lsb_ratio_overall": float(lsb_ratio_overall),
+                    "lsb_ratio_per_channel": [float(v) for v in lsb_ratio_ch],
+                    "lsb_var_mean": float(lsb_var_mean),
+                },
+                "autodetect_scan_1to4": autodet,
+                "autodetect_best": best,
+            }
+
+        except Exception as e:
+            messagebox.showerror("Analysis Error", str(e))
+
+
+    def _wav_read_any(self, path):
+        with wave.open(path, 'rb') as w:
+            params = w.getparams()
+            frames = w.readframes(params.nframes)
+
+        # dtype by sampwidth
+        sw = params.sampwidth
+        if sw == 1:
+            arr = np.frombuffer(frames, dtype=np.uint8).astype(np.uint16)  # 0..255
+        elif sw == 2:
+            arr = np.frombuffer(frames, dtype=np.int16).astype(np.int32)
+        elif sw == 3:
+            raw = np.frombuffer(frames, dtype=np.uint8).reshape(-1, 3)
+            vals = (raw[:,0].astype(np.uint32) |
+                    (raw[:,1].astype(np.uint32) << 8) |
+                    (raw[:,2].astype(np.uint32) << 16))
+            # interpret as signed 24-bit
+            sign = (vals & 0x800000) != 0
+            vals = vals - (sign.astype(np.uint32) << 24)
+            arr = vals.astype(np.int32)
+        else:
+            raise ValueError("Unsupported sample width (8/16/24-bit only).")
+
+        # channels
+        C = params.nchannels
+        if C == 1:
+            samples = arr.reshape(-1, 1)
+        else:
+            samples = arr.reshape(-1, C)
+        return params, samples
+
+    def _chi_square_lsb_audio(self, samples, num_lsbs):
+        """
+        Chi-square across all channels for the chosen LSB depth.
+        Returns (overall_p_value, [per_channel_p_values]).
+        """
+        import math
+        mask = (1 << num_lsbs) - 1
+
+        # Overall test using only the least-significant bit
+        lsb = ((samples & mask) & 1).ravel()
+        n = lsb.size
+        ones = int(np.count_nonzero(lsb))
+        zeros = n - ones
+        expected = n / 2.0
+        chi = ((zeros - expected) ** 2) / expected + ((ones - expected) ** 2) / expected
+        p_overall = 1.0 if chi <= 1e-12 else math.exp(-chi / 2.0)  # approx tail for df=1
+
+        # Per-channel
+        p_ch = []
+        C = samples.shape[1]
+        for c in range(C):
+            ch = ((samples[:, c] & mask) & 1)
+            n_c = ch.size
+            ones_c = int(np.count_nonzero(ch))
+            zeros_c = n_c - ones_c
+            expected_c = n_c / 2.0
+            chi_c = ((zeros_c - expected_c) ** 2) / expected_c + ((ones_c - expected_c) ** 2) / expected_c
+            p_c = 1.0 if chi_c <= 1e-12 else math.exp(-chi_c / 2.0)
+            p_ch.append(float(p_c))
+
+        return float(p_overall), p_ch
+
+
+    def _neighbor_corr_audio(self, samples):
+        """
+        Pearson correlation between adjacent samples per channel.
+        Natural audio usually has strong correlation; LSB embedding adds noise.
+        """
+        C = samples.shape[1]
+        corr_ch = []
+        for c in range(C):
+            x = samples[:-1, c].astype(np.float32)
+            y = samples[1:, c].astype(np.float32)
+            if x.size < 2:
+                corr_ch.append(0.0); continue
+            xm, ym = x.mean(), y.mean()
+            num = np.sum((x-xm)*(y-ym))
+            den = np.sqrt(np.sum((x-xm)**2) * np.sum((y-ym)**2))
+            corr_ch.append(float(num/den) if den != 0 else 0.0)
+        # overall = mean of channels
+        overall = float(np.mean(corr_ch)) if corr_ch else 0.0
+        return overall, corr_ch
+
+    def _lsb_ratio_audio(self, samples, num_lsbs):
+        mask = (1 << num_lsbs) - 1
+        lsb = (samples & mask) & 1
+        overall = float(np.count_nonzero(lsb)) / max(lsb.size, 1)
+        ch = []
+        for c in range(samples.shape[1]):
+            arr = lsb[:,c]
+            ch.append(float(np.count_nonzero(arr)) / max(arr.size, 1))
+        return overall, ch
+
+    def _lsb_block_variance_1d(self, samples, num_lsbs, block=2048):
+        """
+        Compute variance of LSB (1-bit of assumed num_lsbs) per time block (across channels).
+        Returns a 1D array of length ~N/block, normalized 0..1.
+        """
+        mask = (1 << num_lsbs) - 1
+        lsb = ((samples & mask) & 1).astype(np.float32)
+        # average across channels to 1D
+        if lsb.ndim == 2 and lsb.shape[1] > 1:
+            lsb = lsb.mean(axis=1)
+        N = lsb.shape[0]
+        if N < block:
+            v = np.array([lsb.var()], dtype=np.float32)
+        else:
+            nblk = N // block
+            v = np.zeros(nblk, dtype=np.float32)
+            for i in range(nblk):
+                seg = lsb[i*block:(i+1)*block]
+                v[i] = float(seg.var())
+        if v.max() > 0:
+            v = v / v.max()
+        return v
+
+    # ---------- Visuals ----------
+    def _render_waveform(self, samples):
+        """
+        Simple normalized waveform of first channel; 1024 wide, 200 high.
+        """
+        h, w = 200, 1024
+        ch = samples[:,0].astype(np.float32)
+        if ch.size > w:
+            # downsample by picking evenly spaced points
+            idx = np.linspace(0, ch.size-1, w).astype(int)
+            ch = ch[idx]
+        else:
+            # pad to width
+            pad = w - ch.size
+            if pad > 0: ch = np.pad(ch, (0,pad), mode='edge')
+
+        # normalize to -1..1
+        m = max(np.max(np.abs(ch)), 1e-9)
+        y = (ch / m) * 0.9  # leave margin
+        img = Image.new('RGB', (w, h), (240,240,240))
+        px = img.load()
+        mid = h//2
+        # draw axis
+        for x in range(w):
+            px[x, mid] = (180,180,180)
+        # draw waveform
+        for x in range(w):
+            ypix = int(mid - y[x]* (h//2 - 5))
+            # vertical line from mid to ypix
+            y0, y1 = sorted((mid, ypix))
+            for yy in range(y0, y1+1):
+                px[x, yy] = (30,30,30)
+        return img
+
+    def _render_spectrogram(self, mono, win=1024, hop=512):
+        """
+        Very lightweight STFT log-magnitude spectrogram (grayscale).
+        """
+        x = mono.astype(np.float32)
+        N = x.size
+        if N < win:
+            x = np.pad(x, (0, win-N), mode='constant')
+            N = x.size
+        # frames
+        frames = []
+        for start in range(0, N-win+1, hop):
+            seg = x[start:start+win]
+            # Hann
+            n = np.arange(win, dtype=np.float32)
+            seg = seg * (0.5 - 0.5*np.cos(2*np.pi*n/(win-1)))
+            # FFT mag
+            spec = np.abs(np.fft.rfft(seg))
+            frames.append(spec)
+        if not frames:
+            return Image.new('RGB', (4,4), (240,240,240))
+        S = np.stack(frames, axis=1)  # (freq_bins, time)
+        S = S + 1e-8
+        S = 20.0 * np.log10(S)  # dB
+        # normalize to 0..255
+        S = (S - S.min()) / max(S.max()-S.min(), 1e-6)
+        S = (S*255.0).astype(np.uint8)
+        # flip freq so low at bottom
+        S = np.flipud(S)
+        return Image.fromarray(S, mode='L').convert('RGB')
+
+    def _render_lsb_var_bar(self, var_series, height=120):
+        """
+        Render 1D variance series as a bar image (grayscale): bright = high variance.
+        """
+        if var_series.size == 0:
+            return Image.new('RGB', (4, height), (240,240,240))
+        w = int(max(64, var_series.size))
+        # stretch to width
+        xs = np.linspace(0, var_series.size-1, w).astype(int)
+        v = var_series[xs]
+        vimg = (v*255.0).clip(0,255).astype(np.uint8)
+        img = Image.new('L', (w, height), 255)
+        px = img.load()
+        for x in range(w):
+            h = int(vimg[x] * (height/255.0))
+            for y in range(height-1, height-1-h, -1):
+                px[x, y] = 0  # draw black bar up from bottom
+        return img.convert('RGB')
+
+    def _render_audio_diff(self, cover, stego, amplify=8):
+        """
+        Render absolute sample differences (first channel) as spikes after amplification.
+        """
+        c0 = cover[:,0].astype(np.int64)
+        s0 = stego[:,0].astype(np.int64)
+        m = min(c0.size, s0.size)
+        if m == 0:
+            return Image.new('RGB', (4,4), (240,240,240))
+        d = np.abs(s0[:m] - c0[:m])
+        d = np.clip(d * amplify, 0, np.iinfo(np.int32).max)
+        # normalize
+        if d.max() == 0:
+            d = d.astype(np.float32)
+        else:
+            d = d.astype(np.float32) / d.max()
+        # draw like waveform (bars)
+        h, w = 200, 1024
+        if d.size > w:
+            idx = np.linspace(0, d.size-1, w).astype(int)
+            d = d[idx]
+        else:
+            pad = w - d.size
+            if pad > 0: d = np.pad(d, (0,pad), mode='edge')
+        img = Image.new('RGB', (w, h), (240,240,240))
+        px = img.load()
+        for x in range(w):
+            bh = int(d[x] * (h-10))
+            for y in range(h-1, h-1-bh, -1):
+                px[x, y] = (30,30,30)
+        return img
+    def _score_stegoish(self, chi_p, corr, lsb_ratio, lsb_var_mean):
+        """
+        Lower chi_p (more random LSBs), lower corr (more noise),
+        lsb_ratio close to 0.5, higher LSB variance => more 'stego-ish'.
+        Returns a higher-better score in ~[0..1].
+        """
+        # map each metric to 0..1 (higher worse/nastier)
+        s_chi  = 1.0 - float(chi_p)              # 0 (clean) .. 1 (very random)
+        s_corr = float(max(0.0, min(1.0, 1.0 - corr)))  # lower corr -> higher score
+        s_lsb  = 1.0 - min(1.0, abs(lsb_ratio - 0.5) * 4.0)  # peak at 0.5
+        s_var  = float(max(0.0, min(1.0, lsb_var_mean)))     # already 0..1
+
+        # weighted average (tweakable)
+        return 0.35*s_chi + 0.25*s_corr + 0.25*s_lsb + 0.15*s_var
+
+    def _an_save_report(self):
+        text = self.an_audio_text.get("1.0", tk.END).strip()
+        if not text:
+            messagebox.showinfo("Info", "No analysis text to save yet.")
+            return
+        # Ask a base filename; we will create .txt and .json
+        base = filedialog.asksaveasfilename(
+            title="Save analysis report",
+            defaultextension=".txt",
+            filetypes=[("Text report", "*.txt")]
+        )
+        if not base:
+            return
+        # Save text
+        try:
+            with open(base, "w", encoding="utf-8") as f:
+                f.write(text + "\n")
+        except Exception as e:
+            messagebox.showerror("Save Error", f"Failed to save text report:\n{e}")
+            return
+
+        # Save JSON (if we have it)
+        try:
+            import json, os
+            data = getattr(self, "_last_audio_report", None)
+            if data is not None:
+                json_path = os.path.splitext(base)[0] + ".json"
+                with open(json_path, "w", encoding="utf-8") as jf:
+                    json.dump(data, jf, indent=2)
+        except Exception as e:
+            messagebox.showerror("Save Error", f"Failed to save JSON report:\n{e}")
+            return
+
+        messagebox.showinfo("Saved", "Report saved (text and JSON, if available).")
+
+    def _an_load_report(self):
+        import json
+        path = filedialog.askopenfilename(
+            title="Load analysis report (.json or .txt)",
+            filetypes=[("JSON or Text", "*.json *.txt")]
+        )
+        if not path:
+            return
+        try:
+            if path.lower().endswith(".json"):
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                # Rebuild a readable text from JSON
+                lines = []
+                lines.append("Audio Steganalysis Report (loaded)")
+                lines.append("-------------------------------")
+                lines.append(f"File: {os.path.basename(data.get('file',''))}")
+                lines.append(f"Samplerate: {data.get('samplerate','?')} Hz  |  Channels: {data.get('channels','?')}  |  Bitdepth: {data.get('bitdepth','?')}")
+                lines.append(f"Duration: {data.get('duration_sec',0):.2f}s")
+                lines.append(f"Assumed analysis LSBs: {data.get('assumed_lsbs','?')}")
+                lines.append("")
+                m = data.get("metrics", {})
+                lines.append(f"Chi-square LSB p-value (overall): {m.get('chi_p_overall','?')}")
+                co = m.get("corr_overall","?")
+                lines.append(f"Neighbor correlation (overall): {co}")
+                lines.append(f"LSB ones-ratio (overall): {m.get('lsb_ratio_overall','?')}")
+                lines.append(f"Mean LSB variance (blocks): {m.get('lsb_var_mean','?')}")
+                lines.append("")
+                lines.append("Auto-detect (scan LSB=1..4):")
+                for r in data.get("autodetect_scan_1to4", []):
+                    lines.append(f"  LSBs={r['lsbs']}: score={r['score']:.3f} | chi_p={r['chi_p']:.4f} corr={r['corr']:.4f} lsb_ratio={r['lsb_ratio']:.4f} var={r['lsb_var_mean']:.4f}")
+                best = data.get("autodetect_best")
+                if best:
+                    lines.append(f"→ Likely LSB depth: {best['lsbs']} (score {best['score']:.3f})")
+
+                self.an_audio_text.delete(1.0, tk.END)
+                self.an_audio_text.insert(1.0, "\n".join(lines))
+                # We don't reconstruct images on load (that would require caching them); text+metrics is usually enough.
+            else:
+                # Plain text report
+                with open(path, "r", encoding="utf-8") as f:
+                    txt = f.read()
+                self.an_audio_text.delete(1.0, tk.END)
+                self.an_audio_text.insert(1.0, txt)
+        except Exception as e:
+            messagebox.showerror("Load Error", f"Failed to load report:\n{e}")
+
 
     def _create_difference_map(self, cover_path, stego_path):
         cover_img = Image.open(cover_path).convert('RGB')

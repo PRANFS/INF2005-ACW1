@@ -79,6 +79,67 @@ class DropZone(tk.Frame):
         self.configure(bg=self.default_bg)
         self.label.configure(bg=self.default_bg, text=self.default_text)
 
+class KeyLsbDialog(tk.Toplevel):
+    def __init__(self, parent, title="Enter Credentials"):
+        super().__init__(parent)
+        self.title(title)
+        self.geometry("300x200")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+        self.focus_set()
+
+        # Variables
+        self.key_var = tk.StringVar()
+        self.lsb_var = tk.StringVar()
+
+        # Key field
+        tk.Label(self, text="Secret Key:").pack(pady=5)
+        self.key_entry = tk.Entry(self, textvariable=self.key_var, show="*")
+        self.key_entry.pack(pady=5)
+        self.key_entry.focus()
+
+        # LSB field
+        tk.Label(self, text="LSB Value (1-8):").pack(pady=5)
+        self.lsb_entry = tk.Entry(self, textvariable=self.lsb_var)
+        self.lsb_entry.pack(pady=5)
+
+        # Buttons
+        button_frame = tk.Frame(self)
+        button_frame.pack(pady=20)
+        tk.Button(button_frame, text="OK", command=self.on_ok, width=10, padx=20, pady=10).pack(side=tk.LEFT, padx=10)
+        tk.Button(button_frame, text="Cancel", command=self.on_cancel, width=10, padx=20, pady=10).pack(side=tk.LEFT, padx=10)
+
+        self.result = None
+        self.update_idletasks()
+        x = parent.winfo_x() + (parent.winfo_width() // 2) - (self.winfo_width() // 2)
+        y = parent.winfo_y() + (parent.winfo_height() // 2) - (self.winfo_height() // 2)
+        self.geometry(f"+{x}+{y}")
+        self.wait_window(self)
+
+    def on_ok(self):
+        key = self.key_var.get().strip()
+        lsb_str = self.lsb_var.get().strip()
+
+        if not key:
+            messagebox.showerror("Error", "Secret key cannot be empty.")
+            return
+
+        try:
+            lsb = int(lsb_str)
+            if not (1 <= lsb <= 8):
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Error", "LSB value must be an integer between 1 and 8.")
+            return
+
+        self.result = (key, lsb)
+        self.destroy()
+
+    def on_cancel(self):
+        self.result = None
+        self.destroy()
+
 
 class StegApp(TkinterDnD.Tk):
     def __init__(self):
@@ -171,15 +232,18 @@ class StegApp(TkinterDnD.Tk):
                 scrollregion=canvas.bbox("all")
             )
         )
-        canvas.create_window((0, 0), window=inner_frame, anchor="nw")
+        window_id = canvas.create_window((0, 0), window=inner_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window_id, width=e.width))
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
         return inner_frame
 
     # -------------------- IMAGE ENCODE TAB --------------------
     def setup_encode_tab(self, parent):
-        file_frame = tk.LabelFrame(parent, text="File Selection", font=('Helvetica', 10, 'bold'),
+        inner_frame = self.create_scrolled_frame(parent)
+
+        file_frame = tk.LabelFrame(inner_frame, text="File Selection", font=('Helvetica', 10, 'bold'),
                                    bg='#f5f5f5', padx=10, pady=10)
         file_frame.pack(fill=tk.X, padx=10, pady=5)
 
@@ -244,7 +308,7 @@ class StegApp(TkinterDnD.Tk):
         self.payload_text_area.pack(fill=tk.X, pady=5)
         self.payload_text_area.bind('<<Modified>>', self.update_payload_text)
 
-        config_frame = tk.LabelFrame(parent, text="Configuration",
+        config_frame = tk.LabelFrame(inner_frame, text="Configuration",
                                      font=('Helvetica', 10, 'bold'), bg='#f5f5f5',
                                      padx=10, pady=10)
         config_frame.pack(fill=tk.X, padx=10, pady=5)
@@ -276,7 +340,7 @@ class StegApp(TkinterDnD.Tk):
                                        font=('Helvetica', 10, 'italic'), bg='#f5f5f5')
         self.capacity_label.pack(side=tk.LEFT, padx=20)
 
-        button_frame = tk.Frame(parent, bg='#f5f5f5')
+        button_frame = tk.Frame(inner_frame, bg='#f5f5f5')
         button_frame.pack(fill=tk.X, padx=10, pady=10)
 
         tk.Button(button_frame, text="🔒 Encode Payload", bg="#4CAF50", fg="white",
@@ -287,7 +351,7 @@ class StegApp(TkinterDnD.Tk):
                   font=("Helvetica", 12, "bold"), command=self.clear_all,
                   height=2, width=15).pack(side=tk.LEFT, padx=10)
 
-        display_frame = tk.LabelFrame(parent, text="Image Display",
+        display_frame = tk.LabelFrame(inner_frame, text="Image Display",
                                       font=('Helvetica', 10, 'bold'), bg='#f5f5f5')
         display_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
@@ -305,20 +369,10 @@ class StegApp(TkinterDnD.Tk):
         tk.Button(cover_canvas_frame, text="Clear Selection", command=self.clear_selection,
                   bg='#FF5722', fg='white', font=('Helvetica', 9, 'bold')).pack(anchor=tk.NE, padx=5)
 
-        cover_v_scroll = tk.Scrollbar(cover_canvas_frame, orient=tk.VERTICAL)
-        cover_v_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        cover_h_scroll = tk.Scrollbar(cover_canvas_frame, orient=tk.HORIZONTAL)
-        cover_h_scroll.pack(side=tk.BOTTOM, fill=tk.X)
-
         self.cover_canvas = tk.Canvas(
-            cover_canvas_frame, bg="lightgrey", relief=tk.SUNKEN, bd=2,
-            scrollregion=(0, 0, 450, 450), yscrollcommand=cover_v_scroll.set,
-            xscrollcommand=cover_h_scroll.set
+            cover_canvas_frame, bg="lightgrey", relief=tk.SUNKEN, bd=2
         )
         self.cover_canvas.pack(fill=tk.BOTH, expand=True)
-
-        cover_v_scroll.config(command=self.cover_canvas.yview)
-        cover_h_scroll.config(command=self.cover_canvas.xview)
 
         stego_frame = tk.Frame(display_frame, bg='#f5f5f5')
         stego_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5)
@@ -329,20 +383,10 @@ class StegApp(TkinterDnD.Tk):
         stego_canvas_frame = tk.Frame(stego_frame, bg='#f5f5f5')
         stego_canvas_frame.pack(fill=tk.BOTH, expand=True, pady=5)
 
-        stego_v_scroll = tk.Scrollbar(stego_canvas_frame, orient=tk.VERTICAL)
-        stego_v_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        stego_h_scroll = tk.Scrollbar(stego_canvas_frame, orient=tk.HORIZONTAL)
-        stego_h_scroll.pack(side=tk.BOTTOM, fill=tk.X)
-
         self.stego_canvas = tk.Canvas(
-            stego_canvas_frame, bg="lightgrey", relief=tk.SUNKEN, bd=2,
-            scrollregion=(0, 0, 450, 450), yscrollcommand=stego_v_scroll.set,
-            xscrollcommand=stego_h_scroll.set
+            stego_canvas_frame, bg="lightgrey", relief=tk.SUNKEN, bd=2
         )
         self.stego_canvas.pack(fill=tk.BOTH, expand=True)
-
-        stego_v_scroll.config(command=self.stego_canvas.yview)
-        stego_h_scroll.config(command=self.stego_canvas.xview)
 
         self.setup_canvas_bindings()
         self.toggle_payload_input()
@@ -1151,19 +1195,21 @@ class StegApp(TkinterDnD.Tk):
         if not stego_path:
             return
 
-        key = simpledialog.askstring("Input", "Enter the Secret Key:", show="*")
-        if not key:
-            messagebox.showerror("Error", "A valid key is required for decoding.")
-            return
+        # New: Single dialog for key and LSB
+        dialog = KeyLsbDialog(self, title="Enter Decoding Credentials")
+        if dialog.result is None:
+            return  # User canceled
+
+        key, user_lsbs = dialog.result
 
         try:
-            extracted_path, is_text = self._decode_image(stego_path, key, self.num_lsbs.get())
+            extracted_path, is_text = self._decode_image(stego_path, key, user_lsbs)
 
             result_text = f"✅ Payload extracted successfully!\n\n"
             result_text += f"📁 Extracted file: {extracted_path}\n"
             result_text += f"📊 File size: {os.path.getsize(extracted_path)} bytes\n"
             result_text += f"🔑 Key used: [Hidden]\n"
-            result_text += f"⚙️ LSBs used: {self.num_lsbs.get()}\n"
+            result_text += f"⚙️ LSBs used: {user_lsbs}\n"
             if is_text:
                 with open(extracted_path, 'r', encoding='utf-8') as f:
                     content = f.read()[:1000]
@@ -1179,7 +1225,7 @@ class StegApp(TkinterDnD.Tk):
             error_text = f"❌ Failed to decode: {e}\n\n"
             error_text += "Please check:\n"
             error_text += "• Correct secret key\n"
-            error_text += "• Same LSB settings as encoding\n"
+            error_text += "• Correct LSB value (must match encoding)\n"
             error_text += "• Valid stego image file\n"
 
             self.decode_result.delete(1.0, tk.END)
@@ -1243,19 +1289,21 @@ class StegApp(TkinterDnD.Tk):
         self.audio_decode_stego_path.set(stego_path)
         self._draw_waveform(self.audio_stego_canvas_dec, stego_path, title="Stego (Decode)")
 
-        key = simpledialog.askstring("Input", "Enter the Secret Key:", show="*")
-        if not key:
-            messagebox.showerror("Error", "A valid key is required for decoding.")
-            return
+        # New: Single dialog for key and LSB
+        dialog = KeyLsbDialog(self, title="Enter Decoding Credentials")
+        if dialog.result is None:
+            return  # User canceled
+
+        key, user_lsbs = dialog.result
 
         try:
-            extracted_path, is_text = self._decode_audio(stego_path, key, self.audio_num_lsbs.get())
+            extracted_path, is_text = self._decode_audio(stego_path, key, user_lsbs)
 
             result_text = f"✅ Payload extracted successfully!\n\n"
             result_text += f"📁 Extracted file: {extracted_path}\n"
             result_text += f"📊 File size: {os.path.getsize(extracted_path)} bytes\n"
             result_text += f"🔑 Key used: [Hidden]\n"
-            result_text += f"⚙️ LSBs used: {self.audio_num_lsbs.get()}\n"
+            result_text += f"⚙️ LSBs used: {user_lsbs}\n"
             if is_text:
                 with open(extracted_path, 'r', encoding='utf-8') as f:
                     result_text += f"\n📝 Extracted text:\n{f.read()[:1000]}"
@@ -1271,7 +1319,7 @@ class StegApp(TkinterDnD.Tk):
             error_text = f"❌ Failed to decode: {e}\n\n"
             error_text += "Please check:\n"
             error_text += "• Correct secret key\n"
-            error_text += "• Same LSB settings as encoding\n"
+            error_text += "• Correct LSB value (must match encoding)\n"
             error_text += "• Valid stego audio file\n"
 
             self.audio_decode_result.delete(1.0, tk.END)
@@ -1424,10 +1472,12 @@ class StegApp(TkinterDnD.Tk):
         except Exception as e:
             messagebox.showerror("Error", f"Failed to draw I-frame: {e}")
 
-        key = simpledialog.askstring("Input", "Enter the Secret Key:", show="*")
-        if not key:
-            messagebox.showerror("Error", "A valid key is required for decoding.")
-            return
+        # New: Single dialog for key and LSB
+        dialog = KeyLsbDialog(self, title="Enter Decoding Credentials")
+        if dialog.result is None:
+            return  # User canceled
+
+        key, user_lsbs = dialog.result
 
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
@@ -1436,7 +1486,7 @@ class StegApp(TkinterDnD.Tk):
                     ["ffmpeg", "-i", stego_path, "-vf", "select='eq(pict_type\\,I)'", "-vsync", "vfr", "-frames:v", "1", iframe_path],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
                 )
-                extracted_path, is_text = self._decode_image(iframe_path, key, self.video_num_lsbs.get())
+                extracted_path, is_text = self._decode_image(iframe_path, key, user_lsbs)  # Pass user_lsbs
 
                 # Move extracted file to permanent location before temp dir deletion
                 permanent_dir = os.path.dirname(stego_path)
@@ -1448,7 +1498,7 @@ class StegApp(TkinterDnD.Tk):
             result_text += f"📁 Extracted file: {extracted_path}\n"
             result_text += f"📊 File size: {os.path.getsize(extracted_path)} bytes\n"
             result_text += f"🔑 Key used: [Hidden]\n"
-            result_text += f"⚙️ LSBs used: {self.video_num_lsbs.get()}\n"
+            result_text += f"⚙️ LSBs used: {user_lsbs}\n"
             if is_text:
                 with open(extracted_path, 'r', encoding='utf-8') as f:
                     result_text += f"\n📝 Extracted text:\n{f.read()[:1000]}"
@@ -1464,7 +1514,7 @@ class StegApp(TkinterDnD.Tk):
             error_text = f"❌ Failed to decode: {e}\n\n"
             error_text += "Please check:\n"
             error_text += "• Correct secret key\n"
-            error_text += "• Same LSB settings as encoding\n"
+            error_text += "• Correct LSB value (must match encoding)\n"
             error_text += "• Valid stego video file with I-frames\n"
 
             self.video_decode_result.delete(1.0, tk.END)
@@ -1603,11 +1653,10 @@ class StegApp(TkinterDnD.Tk):
             else:
                 x1 = y1 = x2 = y2 = 0  # sentinel for "full image"
 
-            # Fixed header (22 bytes)
+            # Fixed header (21 bytes)
             header = (
                 MAGIC +
                 key_hash[:4] +
-                bytes([num_lsbs & 0xFF]) +
                 len(payload_data).to_bytes(4, "big") +
                 bytes([fn_len]) +
                 int(x1).to_bytes(2, "big") + int(y1).to_bytes(2, "big") +
@@ -1632,7 +1681,7 @@ class StegApp(TkinterDnD.Tk):
                     for i in range(3):
                         if idx >= len(bits): break
                         chunk = bits[idx:idx + per_pixel_lsbs]
-                        val = int(chunk.to01(), 2) if chunk else 0
+                        val = int(chunk.to01().ljust(per_pixel_lsbs, '0'), 2)
                         rgb[i] = (rgb[i] & mask_keep) | val
                         idx += per_pixel_lsbs
                     pixels[x, y] = tuple(rgb)
@@ -1669,9 +1718,9 @@ class StegApp(TkinterDnD.Tk):
             image.save(stego_path, "PNG")
             return stego_path
 
-    def _decode_image(self, stego_path, key, _ignored_num_lsbs):
+    def _decode_image(self, stego_path, key, num_lsbs):
         MAGIC = b"STG2"
-        FIXED_HDR_LEN = 22
+        FIXED_HDR_LEN = 21  # Updated: removed 1 byte for body_num_lsbs
         HEADER_LSBS = 1
 
         image = Image.open(stego_path).convert("RGB")
@@ -1701,13 +1750,13 @@ class StegApp(TkinterDnD.Tk):
             raise ValueError("Unsupported/old stego format or corrupted header.")
 
         stored_key_prefix = hdr[4:8]
-        body_num_lsbs = hdr[8]
-        payload_size = int.from_bytes(hdr[9:13], "big")
-        filename_len = hdr[13]
-        x1 = int.from_bytes(hdr[14:16], "big")
-        y1 = int.from_bytes(hdr[16:18], "big")
-        x2 = int.from_bytes(hdr[18:20], "big")
-        y2 = int.from_bytes(hdr[20:22], "big")
+        # Removed: body_num_lsbs = hdr[8]  # No longer stored
+        payload_size = int.from_bytes(hdr[8:12], "big")  # Shifted: was 9:13
+        filename_len = hdr[12]  # Shifted: was 13
+        x1 = int.from_bytes(hdr[13:15], "big")  # Shifted: was 14:16
+        y1 = int.from_bytes(hdr[15:17], "big")  # Shifted: was 16:18
+        x2 = int.from_bytes(hdr[17:19], "big")  # Shifted: was 18:20
+        y2 = int.from_bytes(hdr[19:21], "big")  # Shifted: was 20:22
 
         key_hash, seed = self.hash_key(key)
         if stored_key_prefix != key_hash[:4]:
@@ -1725,8 +1774,8 @@ class StegApp(TkinterDnD.Tk):
         random.seed(seed)
         random.shuffle(region_pos)
 
-        # 3) Extract body with stored LSBs
-        body_bits = extract_bits(region_pos, total_body_bits, body_num_lsbs)
+        # 3) Extract body with user-provided LSBs
+        body_bits = extract_bits(region_pos, total_body_bits, num_lsbs)
         if len(body_bits) < total_body_bits:
             raise ValueError("Incomplete embedded data (region/LSB mismatch).")
 
@@ -1742,8 +1791,9 @@ class StegApp(TkinterDnD.Tk):
 
     def _encode_audio(self, cover_path, payload_data, filename, key, num_lsbs):
         key_hash, seed = self.hash_key(key)
+        key_hash = key_hash[:4]  # Use only first 4 bytes for embedding
         metadata = key_hash + len(payload_data).to_bytes(4, 'big') + \
-            len(filename).to_bytes(1, 'big') + filename.encode()
+                len(filename).to_bytes(1, 'big') + filename.encode()
         data_to_embed = metadata + payload_data
         bit_stream = bitarray()
         bit_stream.frombytes(data_to_embed)
@@ -1756,19 +1806,17 @@ class StegApp(TkinterDnD.Tk):
             audio_data = np.frombuffer(frames, dtype=np.uint8).copy()
             max_val, min_val = 255, 0
         elif params.sampwidth == 2:
-            audio_data = np.frombuffer(frames, dtype=np.int16).copy()
-            max_val, min_val = 32767, -32768
+            audio_data = np.frombuffer(frames, dtype=np.uint16).copy()
+            max_val, min_val = 65535, 0
         elif params.sampwidth == 3:
             raw = np.frombuffer(frames, dtype=np.uint8).reshape(-1, 3)
             audio_data = (
-                raw[:, 0].astype(np.int32)
-                | (raw[:, 1].astype(np.int32) << 8)
-                | (raw[:, 2].astype(np.int32) << 16)
+                raw[:, 0].astype(np.uint32)
+                | (raw[:, 1].astype(np.uint32) << 8)
+                | (raw[:, 2].astype(np.uint32) << 16)
             )
-            audio_data = np.where(
-                audio_data >= (1 << 23), audio_data - (1 << 24), audio_data
-            ).astype(np.int32)
-            max_val, min_val = (1 << 23) - 1, -(1 << 23)
+            audio_data = audio_data & 0xFFFFFF
+            max_val, min_val = 16777215, 0
         else:
             raise ValueError("Unsupported sample width. Only 8, 16, and 24-bit audio supported.")
 
@@ -1789,7 +1837,7 @@ class StegApp(TkinterDnD.Tk):
                 break
 
             chunk = bit_stream[bit_index:bit_index + num_lsbs]
-            bits_to_embed = int(chunk.to01(), 2) if chunk else 0
+            bits_to_embed = int(chunk.to01().ljust(num_lsbs, '0'), 2)
 
             original_sample = int(audio_data[sample_idx])
             modified_sample = (original_sample & mask) | bits_to_embed
@@ -1828,17 +1876,16 @@ class StegApp(TkinterDnD.Tk):
             max_val = 0xFFFF
         elif params.sampwidth == 3:
             raw = np.frombuffer(frames, dtype=np.uint8).reshape(-1, 3)
-            audio_data = (raw[:, 0].astype(np.int32) |
-                          (raw[:, 1].astype(np.int32) << 8) |
-                          (raw[:, 2].astype(np.int32) << 16))
-            audio_data = np.where(audio_data >= (1 << 23),
-                                  audio_data - (1 << 24),
-                                  audio_data)
+            audio_data = (raw[:, 0].astype(np.uint32) |
+                        (raw[:, 1].astype(np.uint32) << 8) |
+                        (raw[:, 2].astype(np.uint32) << 16))
+            audio_data = audio_data & 0xFFFFFF
             max_val = 0xFFFFFF
         else:
             raise ValueError("Unsupported sample width. Only 8, 16, and 24-bit audio supported.")
 
         key_hash, seed = self.hash_key(key)
+        key_hash = key_hash[:4]  # Use only first 4 bytes for comparison
         random.seed(seed)
         sample_indices = list(range(len(audio_data)))
         random.shuffle(sample_indices)
@@ -1862,6 +1909,9 @@ class StegApp(TkinterDnD.Tk):
         # Check metadata format
         stored_key_hash = extracted_bits[:32].tobytes()
         offset = 32
+        print(f"Debug: computed key_hash: {key_hash.hex()}")  # Updated to show 4-byte hash
+        print(f"Debug: extracted stored_key_hash: {stored_key_hash.hex()}")
+        print(f"Debug: stored_key_hash matches key_hash: {stored_key_hash == key_hash}")  # Now comparable
         if len(stored_key_hash) == 4 and stored_key_hash == key_hash:
             # New format with key hash
             payload_size = int(extracted_bits[offset:offset+32].to01(), 2)
@@ -1869,12 +1919,15 @@ class StegApp(TkinterDnD.Tk):
             filename_len = int(extracted_bits[offset:offset+8].to01(), 2)
             offset += 8
         else:
-            # Old format (no key hash)
+            # Old format (no key hash) - fallback for compatibility
             offset = 0
             payload_size = int(extracted_bits[offset:offset+32].to01(), 2)
             offset += 32
             filename_len = int(extracted_bits[offset:offset+8].to01(), 2)
             offset += 8
+
+        print(f"Debug: extracted payload_size: {payload_size}")
+        print(f"Debug: extracted filename_len: {filename_len}")
 
         if filename_len <= 0 or filename_len > 255:
             raise ValueError(f"Invalid filename length: {filename_len}")
@@ -2141,7 +2194,8 @@ class StegApp(TkinterDnD.Tk):
         canv_w, canv_h = 450, 450  # thumbnail size
         scale_x = orig_w / canv_w
         scale_y = orig_h / canv_h
-        return (min(x1, x2) * scale_x, min(y1, y2) * scale_y, max(x1, x2) * scale_x, max(y1, y2) * scale_y)
+        # Convert to integers to avoid float issues in range()
+        return (int(min(x1, x2) * scale_x), int(min(y1, y2) * scale_y), int(max(x1, x2) * scale_x), int(max(y1, y2) * scale_y))
 
     def clear_selection(self):
         if hasattr(self, 'rect'):

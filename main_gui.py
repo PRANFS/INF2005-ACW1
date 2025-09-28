@@ -1175,6 +1175,7 @@ class StegApp(TkinterDnD.Tk):
                 payload_data = f.read()
             filename = os.path.basename(payload_path)
         else:
+            self.update_payload_text()  # Ensure text is updated
             text = self.payload_text.get()
             if not text:
                 messagebox.showerror("Error", "Please enter payload text.")
@@ -1257,6 +1258,7 @@ class StegApp(TkinterDnD.Tk):
                 payload_data = f.read()
             filename = os.path.basename(payload_path)
         else:
+            self.update_audio_payload_text()  # Ensure text is updated
             text = self.audio_payload_text.get()
             if not text:
                 messagebox.showerror("Error", "Please enter payload text.")
@@ -1275,7 +1277,8 @@ class StegApp(TkinterDnD.Tk):
 
             # Update visuals (waveforms + flip count)
             self.update_audio_visuals()
-
+            
+            messagebox.showinfo("Success", f"Stego audio saved as: {stego_path}")
         except ValueError as e:
             messagebox.showerror("Encoding Error", str(e))
         except Exception as e:
@@ -1355,6 +1358,7 @@ class StegApp(TkinterDnD.Tk):
                 payload_data = f.read()
             filename = os.path.basename(payload_path)
         else:
+            self.update_video_payload_text()  # Ensure text is updated
             text = self.video_payload_text.get()
             if not text:
                 messagebox.showerror("Error", "Please enter payload text.")
@@ -1378,6 +1382,7 @@ class StegApp(TkinterDnD.Tk):
                 
                 if not os.path.exists(iframe_path):
                     raise ValueError("No I-frame found in video.")
+                
                 print("I-frame extraction successful")
 
                 # Embed payload into the I-frame using image method (full region)

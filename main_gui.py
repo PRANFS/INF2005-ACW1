@@ -212,9 +212,13 @@ class StegApp(TkinterDnD.Tk):
 
         audio_analysis_frame = ttk.Frame(notebook)
         notebook.add(audio_analysis_frame, text="Audio Analysis")
+
+        video_analysis_frame = ttk.Frame(notebook)
+        notebook.add(video_analysis_frame, text="Video Analysis")
         
         self.setup_audio_analysis_tab(audio_analysis_frame)
         self.setup_analysis_tab(analysis_frame)
+        self.setup_video_analysis_tab(video_analysis_frame)
         self.setup_encode_tab(encode_frame)
         self.setup_decode_tab(decode_frame)
         self.setup_audio_encode_tab(audio_encode_frame)
@@ -631,7 +635,7 @@ class StegApp(TkinterDnD.Tk):
         cover_section = tk.Frame(file_frame, bg='#f5f5f5')
         cover_section.pack(fill=tk.X, pady=5)
 
-        tk.Label(cover_section, text="Cover Video File (MP4):", font=('Helvetica', 10, 'bold'),
+        tk.Label(cover_section, text="Cover Video File (MP4 or MKV):", font=('Helvetica', 10, 'bold'),
                  bg='#f5f5f5').pack(anchor=tk.W)
 
         cover_input_frame = tk.Frame(cover_section, bg='#f5f5f5')
@@ -645,9 +649,9 @@ class StegApp(TkinterDnD.Tk):
                   bg='#4CAF50', fg='white', font=('Helvetica', 9, 'bold')).pack(side=tk.RIGHT)
 
         self.video_cover_drop_zone = DropZone(cover_section,
-                                              "Drag & Drop Cover Video File Here\n(MP4 format)",
+                                              "Drag & Drop Cover Video File Here\n(MP4 or MKV format)",
                                               callback=self.set_video_cover,
-                                              file_types=['.mp4'])
+                                              file_types=['.mp4', '.mkv'])
         self.video_cover_drop_zone.pack(fill=tk.X, pady=5)
 
         payload_section = tk.Frame(file_frame, bg='#f5f5f5')
@@ -777,7 +781,7 @@ class StegApp(TkinterDnD.Tk):
         decode_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
         instructions = tk.Label(decode_frame,
-                                text="Select a steganographic MP4 file to extract the hidden payload from its I-frames.\n"
+                                text="Select a steganographic MP4 or MKV file to extract the hidden payload from its I-frames.\n"
                                      "Use the same secret key and LSB settings as during encoding.",
                                 font=('Helvetica', 10), bg='#f5f5f5', wraplength=700, justify=tk.CENTER)
         instructions.pack(pady=10)
@@ -849,7 +853,7 @@ class StegApp(TkinterDnD.Tk):
         self.update_audio_capacity_display()
 
     def browse_video_cover(self):
-        path = filedialog.askopenfilename(filetypes=[("MP4 files", "*.mp4")])
+        path = filedialog.askopenfilename(filetypes=[("Video files", "*.mp4 *.mkv")])
         if path:
             self.set_video_cover(path)
 
@@ -1362,61 +1366,57 @@ class StegApp(TkinterDnD.Tk):
             with tempfile.TemporaryDirectory() as tmpdir:
                 # Extract first I-frame as PNG
                 iframe_path = os.path.join(tmpdir, "iframe.png")
-                subprocess.check_call(
+                result = subprocess.run(
                     ["ffmpeg", "-i", cover_path, "-vf", "select='eq(pict_type\\,I)'", "-vsync", "vfr", "-frames:v", "1", iframe_path],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    capture_output=True, text=True
                 )
+                if result.returncode != 0:
+                    print(f"I-frame extraction failed:")
+                    print(f"stdout: {result.stdout}")
+                    print(f"stderr: {result.stderr}")
+                    raise subprocess.CalledProcessError(result.returncode, result.args)
+                
                 if not os.path.exists(iframe_path):
                     raise ValueError("No I-frame found in video.")
+                print("I-frame extraction successful")
 
                 # Embed payload into the I-frame using image method (full region)
                 stego_iframe = self._encode_image(iframe_path, payload_data, filename, key, num_lsbs)
+                print(f"Stego I-frame created: {stego_iframe}")
 
                 # Get video params and frame duration
                 params = self.get_video_params(cover_path)
                 frame_duration = 1 / params['fps']
                 timestamp = self._get_first_iframe_timestamp(cover_path)
+                print(f"Video params: FPS={params['fps']}, frame_duration={frame_duration}, timestamp={timestamp}")
 
-                # Create short lossless video from stego I-frame
-                short_video = os.path.join(tmpdir, "short.mkv")  # Use MKV for FFV1 compatibility
-                subprocess.check_call(
-                    ["ffmpeg", "-y", "-loop", "1", "-i", stego_iframe, "-t", str(frame_duration), "-c:v", "ffv1", "-an", short_video],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                )
-
-                # Prepare concat files
-                concat_file = os.path.join(tmpdir, "concat.txt")
-
+                # Build filter_complex to replace the I-frame
                 if timestamp == 0:
-                    # First I-frame at start: concat short + rest
-                    rest_video = os.path.join(tmpdir, "rest.mkv")
-                    subprocess.check_call(
-                        ["ffmpeg", "-y", "-i", cover_path, "-ss", str(frame_duration), "-c:v", "ffv1", "-c:a", "copy", rest_video],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                    )
-                    with open(concat_file, "w") as f:
-                        f.write(f"file '{short_video}'\nfile '{rest_video}'\n")
+                    # First I-frame at start: concat stego frame + rest of video
+                    filter_complex = f"[1:v]setpts=PTS[v2]; [0:v]trim={frame_duration}:,setpts=PTS-STARTPTS[v3]; [v2][v3]concat=n=2:v=1:a=0[v]"
                 else:
-                    # First I-frame not at start: concat part1 + short + part2
-                    part1 = os.path.join(tmpdir, "part1.mkv")
-                    subprocess.check_call(
-                        ["ffmpeg", "-y", "-i", cover_path, "-t", str(timestamp), "-c:v", "ffv1", "-c:a", "copy", part1],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                    )
-                    part2 = os.path.join(tmpdir, "part2.mkv")
-                    subprocess.check_call(
-                        ["ffmpeg", "-y", "-i", cover_path, "-ss", str(timestamp + frame_duration), "-c:v", "ffv1", "-c:a", "copy", part2],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                    )
-                    with open(concat_file, "w") as f:
-                        f.write(f"file '{part1}'\nfile '{short_video}'\nfile '{part2}'\n")
+                    # First I-frame not at start: concat before + stego frame + after
+                    filter_complex = f"[0:v]trim=0:{timestamp},setpts=PTS-STARTPTS[v1]; [1:v]setpts=PTS+{timestamp}[v2]; [0:v]trim={timestamp + frame_duration}:,setpts=PTS-STARTPTS[v3]; [v1][v2][v3]concat=n=3:v=1:a=0[v]"
 
-                # Concatenate to final stego video (output as MP4 for compatibility, but lossless)
-                stego_path = os.path.join(os.path.dirname(cover_path), "stego_" + os.path.basename(cover_path))
-                subprocess.check_call(
-                    ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_file, "-c", "copy", stego_path],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                print(f"Filter complex: {filter_complex}")
+
+                # Re-encode video with stego I-frame inserted, using FFV1 (lossless) in MKV
+                base_name = os.path.splitext(os.path.basename(cover_path))[0]
+                stego_path = os.path.join(os.path.dirname(cover_path), f"stego_{base_name}.mkv")
+                print(f"Final encoding to: {stego_path}")
+                
+                result = subprocess.run(
+                    ["ffmpeg", "-y", "-i", cover_path, "-i", stego_iframe, "-filter_complex", filter_complex,
+                    "-map", "[v]", "-map", "0:a?", "-c:v", "ffv1", "-c:a", "copy", stego_path],
+                    capture_output=True, text=True
                 )
+                if result.returncode != 0:
+                    print(f"Final encoding failed:")
+                    print(f"stdout: {result.stdout}")
+                    print(f"stderr: {result.stderr}")
+                    raise subprocess.CalledProcessError(result.returncode, result.args)
+                
+                print("Final encoding successful")
 
             self.video_stego_path.set(stego_path)
             self.btn_play_video_stego_enc.config(state=tk.NORMAL)
@@ -1425,8 +1425,8 @@ class StegApp(TkinterDnD.Tk):
 
             messagebox.showinfo("Success", f"Stego video saved as: {stego_path}")
 
-        except subprocess.CalledProcessError:
-            messagebox.showerror("Error", "FFmpeg failed during processing.")
+        except subprocess.CalledProcessError as e:
+            messagebox.showerror("Error", f"FFmpeg failed during processing. Check console for details.")
         except ValueError as e:
             messagebox.showerror("Encoding Error", str(e))
         except Exception as e:
@@ -1451,7 +1451,7 @@ class StegApp(TkinterDnD.Tk):
 
         stego_path = filedialog.askopenfilename(
             title="Select Stego-Video File",
-            filetypes=[("MP4 files", "*.mp4")]
+            filetypes=[("Video files", "*.mp4 *.mkv")]
         )
         if not stego_path:
             return
@@ -1579,7 +1579,7 @@ class StegApp(TkinterDnD.Tk):
         except Exception:
             pass
 
-        self.video_cover_drop_zone.update_text("Drag & Drop Cover Video File Here\n(MP4 format)")
+        self.video_cover_drop_zone.update_text("Drag & Drop Cover Video File Here\n(MP4 or MKV format)")
         self.video_payload_drop_zone.update_text("Drag & Drop Payload File Here\n(Any file type)")
         self.video_cover_drop_zone.reset_colors()
         self.video_payload_drop_zone.reset_colors()
@@ -2961,6 +2961,231 @@ class StegApp(TkinterDnD.Tk):
         seed = int.from_bytes(h[:8], 'big')
         return h, seed
 
+    # -------------------- VIDEO ANALYSIS TAB --------------------
+    def setup_video_analysis_tab(self, parent):
+        container = tk.Frame(parent, bg='#f5f5f5')
+        container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        picks = tk.LabelFrame(container, text="Select Video(s) to Analyze", bg='#f5f5f5', padx=10, pady=10)
+        picks.pack(fill=tk.X)
+
+        self.an_video_path = tk.StringVar()
+        self.an_video_cover_hint = tk.StringVar()
+        self.an_video_lsbs = tk.IntVar(value=1)
+
+        r1 = tk.Frame(picks, bg='#f5f5f5'); r1.pack(fill=tk.X, pady=3)
+        tk.Label(r1, text="Suspected Stego Video:", bg='#f5f5f5').pack(side=tk.LEFT)
+        tk.Entry(r1, textvariable=self.an_video_path, state='readonly').pack(side=tk.LEFT, fill=tk.X, expand=True, padx=8)
+        tk.Button(r1, text="Browse", command=self._an_browse_video, bg='#2196F3', fg='white').pack(side=tk.LEFT)
+
+        r2 = tk.Frame(picks, bg='#f5f5f5'); r2.pack(fill=tk.X, pady=3)
+        tk.Label(r2, text="(Optional) Original Cover Video:", bg='#f5f5f5').pack(side=tk.LEFT)
+        tk.Entry(r2, textvariable=self.an_video_cover_hint, state='readonly').pack(side=tk.LEFT, fill=tk.X, expand=True, padx=8)
+        tk.Button(r2, text="Browse", command=self._an_browse_video_cover, bg='#607D8B', fg='white').pack(side=tk.LEFT)
+
+        r3 = tk.Frame(picks, bg='#f5f5f5'); r3.pack(fill=tk.X, pady=6)
+        tk.Label(r3, text="Assumed LSBs for Analysis:", bg='#f5f5f5').pack(side=tk.LEFT)
+        tk.Scale(r3, from_=1, to=8, orient=HORIZONTAL, variable=self.an_video_lsbs, bg='#f5f5f5', length=200).pack(side=tk.LEFT, padx=10)
+
+        actions = tk.Frame(container, bg='#f5f5f5'); actions.pack(fill=tk.X, pady=8)
+        tk.Button(actions, text="🔎 Run Video Analysis", command=self.run_video_stego_analysis,
+                bg='#4CAF50', fg='white', font=('Helvetica', 11, 'bold')).pack(side=tk.LEFT, padx=4)
+        tk.Button(actions, text="💾 Save Report", command=self._an_video_save_report,
+                bg='#3F51B5', fg='white').pack(side=tk.LEFT, padx=4)
+        tk.Button(actions, text="📂 Load Report", command=self._an_video_load_report,
+                bg='#009688', fg='white').pack(side=tk.LEFT, padx=4)
+        tk.Button(actions, text="🗑️ Clear", command=self._an_video_clear_ui, bg='#FF9800', fg='white').pack(side=tk.LEFT, padx=4)
+
+        self.an_video_text = tk.Text(container, height=10, bg='#f8f8f8', relief=tk.SUNKEN, bd=2, font=('Consolas', 10))
+        self.an_video_text.pack(fill=tk.X, pady=6)
+
+        viz = tk.LabelFrame(container, text="Visual Diagnostics (First I-Frame)", bg='#f5f5f5', padx=10, pady=10)
+        viz.pack(fill=tk.BOTH, expand=True)
+        grid = tk.Frame(viz, bg='#f5f5f5'); grid.pack(fill=tk.BOTH, expand=True)
+
+        self.viz_video_lsb_label = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2, width=50, height=18)
+        self.viz_video_heat_label = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2, width=50, height=18)
+        self.viz_video_hist_label = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2, width=50, height=18)
+        self.viz_video_diff_label = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2, width=50, height=18)
+
+        self.viz_video_lsb_label.grid(row=0, column=0, padx=5, pady=5, sticky='nsew')
+        self.viz_video_heat_label.grid(row=0, column=1, padx=5, pady=5, sticky='nsew')
+        self.viz_video_hist_label.grid(row=1, column=0, padx=5, pady=5, sticky='nsew')
+        self.viz_video_diff_label.grid(row=1, column=1, padx=5, pady=5, sticky='nsew')
+
+        grid.grid_columnconfigure(0, weight=1)
+        grid.grid_columnconfigure(1, weight=1)
+        grid.grid_rowconfigure(0, weight=1)
+        grid.grid_rowconfigure(1, weight=1)
+
+    def _an_browse_video(self):
+        path = filedialog.askopenfilename(title="Select Video", filetypes=[("Video files", "*.mp4 *.mkv")])
+        if path: self.an_video_path.set(path)
+
+    def _an_browse_video_cover(self):
+        path = filedialog.askopenfilename(title="Select Original Cover Video", filetypes=[("Video files", "*.mp4 *.mkv")])
+        if path: self.an_video_cover_hint.set(path)
+
+    def _an_video_clear_ui(self):
+        self.an_video_path.set("")
+        self.an_video_cover_hint.set("")
+        self.an_video_lsbs.set(1)
+        self.an_video_text.delete(1.0, tk.END)
+        for lbl in (self.viz_video_lsb_label, self.viz_video_heat_label, self.viz_video_hist_label, self.viz_video_diff_label):
+            lbl.configure(image='', text="")
+            lbl.image = None
+
+    def run_video_stego_analysis(self):
+        if shutil.which("ffmpeg") is None:
+            messagebox.showerror("Error", "FFmpeg not found. Please install FFmpeg to use video analysis.")
+            return
+
+        path = self.an_video_path.get().strip()
+        if not path:
+            messagebox.showerror("Error", "Select a video file to analyze.")
+            return
+
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                # Extract first I-frame from stego video
+                stego_iframe_path = self._extract_first_iframe(path, tmpdir, "stego_iframe.png")
+                if not os.path.exists(stego_iframe_path):
+                    raise ValueError("No I-frame found in stego video.")
+
+                # Load I-frame as array
+                img = Image.open(stego_iframe_path).convert('RGB')
+                arr = np.array(img, dtype=np.uint8)
+
+                # ---- choose bit-plane from slider (1..8 on UI ⇒ 0..7 bit index) ----
+                k = max(0, min(int(self.an_video_lsbs.get()) - 1, 7))
+
+                # ---- headline metrics on selected bit-plane k ----
+                chi_p = self._chi_square_lsb_pvalue(arr)
+                corr = self._neighbor_correlation(arr)
+                lsb_ratio = self._lsb_one_ratio(arr)
+                heat = self._lsb_variance_heatmap(arr, block=8)  # 8x8 blocks
+
+                # ---- auto-detect most likely bit depth (scan 1..8 → bit_index 0..7) ----
+                autodet_rows = []
+                best = None
+                for d in range(1, 9):
+                    kk = d - 1
+                    chi_p_o = self._chi_square_lsb_pvalue(arr)
+                    corr_o = self._neighbor_correlation(arr)
+                    lsb_ratio_o = self._lsb_one_ratio(arr)
+                    series = self._lsb_variance_heatmap(arr, block=8)
+                    var_mean = float(series.mean()) if series.size else 0.0
+                    score = float(self._score_stegoish(chi_p_o, corr_o, lsb_ratio_o, var_mean))
+                    row = {
+                        "lsbs": d, "score": score,
+                        "chi_p": float(chi_p_o),
+                        "corr": float(corr_o),
+                        "lsb_ratio": float(lsb_ratio_o),
+                        "var": float(var_mean),
+                    }
+                    autodet_rows.append(row)
+                    if (best is None) or (row["score"] > best["score"]):
+                        best = row
+
+                # ---- optional difference view with original cover ----
+                diff_img = None
+                cover_path = self.an_video_cover_hint.get().strip()
+                if cover_path and os.path.exists(cover_path):
+                    cover_iframe_path = self._extract_first_iframe(cover_path, tmpdir, "cover_iframe.png")
+                    if os.path.exists(cover_iframe_path):
+                        cover_img = Image.open(cover_iframe_path).convert('RGB')
+                        diff_img = self._render_diff_amplified(cover_img, img, factor=16)
+
+                # ---- visuals ----
+                lsb_img = self._render_lsb_plane(arr)                   
+                hist_img = self._render_histograms(arr)                 
+                heat_img = self._render_heatmap_image(heat, img.size)   
+
+                # ---- video params ----
+                params = self.get_video_params(path)
+                duration = params['duration']
+                resolution = f"{params['width']}x{params['height']}"
+                fps = params['fps']
+                i_frame_count = params['i_frame_count']
+
+                # ---- report text ----
+                lines = []
+                lines.append("Auto-detect (scan LSB=1..8 on first I-frame): higher score = more 'stego-ish'")
+                for r in autodet_rows:
+                    lines.append(
+                        f"LSBs={r['lsbs']}: score={r['score']:.3f} | "
+                        f"chi_p={r['chi_p']:.4f} corr={r['corr']:.4f} "
+                        f"lsb_ratio={r['lsb_ratio']:.4f} var={r['var']:.4f}"
+                    )
+                if best:
+                    lines.append(f"\nLikely LSB depth: {best['lsbs']} (score {best['score']:.3f})\n")
+
+                lines.append("Summary on first I-frame (bit-plane 0)")
+                lines.append("------------------------")
+                lines.append(f"Video: {os.path.basename(path)}  |  Duration: {duration:.2f}s | Resolution: {resolution} | FPS: {fps:.2f} | I-frames: {i_frame_count}")
+                lines.append(f"Analyzed bit-plane: {k}  (UI value {k+1})")
+                lines.append(f"Chi-square LSB p-value: {chi_p:.4f}")
+                lines.append(f"Neighbor correlation (0..1). Natural images ~0.90–0.99: {corr:.4f}")
+                lines.append(f"LSB ones-ratio (should be near 0.5): {lsb_ratio:.4f}")
+                lines.append("Heatmap: bright regions = higher LSB variability (possible embedding zones)\n")
+
+                # ---- show text ----
+                self.an_video_text.delete(1.0, tk.END)
+                self.an_video_text.insert(1.0, "\n".join(lines))
+
+                # ---- show images ----
+                def _to_tk(im, max_wh=(450, 450)):
+                    imc = im.copy(); imc.thumbnail(max_wh)
+                    return ImageTk.PhotoImage(imc)
+
+                lsb_tk = _to_tk(lsb_img); self.viz_video_lsb_label.configure(image=lsb_tk); self.viz_video_lsb_label.image = lsb_tk
+                heat_tk = _to_tk(heat_img); self.viz_video_heat_label.configure(image=heat_tk); self.viz_video_heat_label.image = heat_tk
+                hist_tk = _to_tk(hist_img); self.viz_video_hist_label.configure(image=hist_tk); self.viz_video_hist_label.image = hist_tk
+
+                if diff_img is not None:
+                    diff_tk = _to_tk(diff_img)
+                    self.viz_video_diff_label.configure(image=diff_tk); self.viz_video_diff_label.image = diff_tk
+                else:
+                    self.viz_video_diff_label.configure(image='', text="(Optional) Provide cover video to see amplified difference")
+
+        except Exception as e:
+            messagebox.showerror("Analysis Error", str(e))
+
+    def _an_video_save_report(self):
+        text = self.an_video_text.get("1.0", tk.END).strip()
+        if not text:
+            messagebox.showinfo("Info", "No analysis text to save yet.")
+            return
+        base = filedialog.asksaveasfilename(
+            title="Save analysis report",
+            defaultextension=".txt",
+            filetypes=[("Text report", "*.txt")]
+        )
+        if not base:
+            return
+        try:
+            with open(base, "w", encoding="utf-8") as f:
+                f.write(text + "\n")
+        except Exception as e:
+            messagebox.showerror("Save Error", f"Failed to save text report:\n{e}")
+            return
+
+        messagebox.showinfo("Saved", "Report saved.")
+
+    def _an_video_load_report(self):
+        path = filedialog.askopenfilename(
+            title="Load analysis report (.txt)",
+            filetypes=[("Text report", "*.txt")]
+        )
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                txt = f.read()
+            self.an_video_text.delete(1.0, tk.END)
+            self.an_video_text.insert(1.0, txt)
+        except Exception as e:
+            messagebox.showerror("Load Error", f"Failed to load report:\n{e}")
 
 if __name__ == "__main__":
     try:

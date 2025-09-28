@@ -2,7 +2,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 from tkinter import Scale, HORIZONTAL, Checkbutton
 import tkinterdnd2 as TkinterDnD
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageDraw, ImageFont
 import os
 import random
 import platform
@@ -11,6 +11,7 @@ import wave
 import numpy as np
 from bitarray import bitarray
 import math
+import matplotlib.cm as cm
 import hashlib
 import json
 import tempfile
@@ -2211,8 +2212,7 @@ class StegApp(TkinterDnD.Tk):
      # -------------------- ANALYSIS TAB --------------------
     
     def setup_analysis_tab(self, parent):
-        container = tk.Frame(parent, bg='#f5f5f5')
-        container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        container = self.create_scrolled_frame(parent)
 
         # ---- File pickers ----
         pickers = tk.LabelFrame(container, text="Select Image(s) to Analyze", bg='#f5f5f5', padx=10, pady=10)
@@ -2247,10 +2247,21 @@ class StegApp(TkinterDnD.Tk):
         # Four image slots: LSB plane, Heatmap, Hist, DiffAmp
         grid = tk.Frame(viz, bg='#f5f5f5'); grid.pack(fill=tk.BOTH, expand=True)
 
-        self.viz_lsb_label = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2, width=50, height=18)
-        self.viz_heat_label = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2, width=50, height=18)
-        self.viz_hist_label = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2, width=50, height=18)
-        self.viz_diff_label = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2, width=50, height=18)
+        
+        cap_font = ('Helvetica', 10, 'bold')
+        self.viz_lsb_label  = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2,
+                                    compound='top', font=cap_font,
+                                    text="Cover Histogram (optional)")
+        self.viz_heat_label = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2,
+                                    compound='top', font=cap_font,
+                                    text="Stego Histogram")
+        self.viz_hist_label = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2,
+                                    compound='top', font=cap_font,
+                                    text="LSB Plane (combined RGB)")
+        self.viz_diff_label = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2,
+                                    compound='top', font=cap_font,
+                                    text="LSB-Variance Heatmap")
+
 
         self.viz_lsb_label.grid(row=0, column=0, padx=5, pady=5, sticky='nsew')
         self.viz_heat_label.grid(row=0, column=1, padx=5, pady=5, sticky='nsew')
@@ -2261,6 +2272,147 @@ class StegApp(TkinterDnD.Tk):
         grid.grid_columnconfigure(1, weight=1)
         grid.grid_rowconfigure(0, weight=1)
         grid.grid_rowconfigure(1, weight=1)
+
+    def _ia_set_row_heights(self, grid, top_left_tk, top_right_tk, bottom_left_tk, bottom_right_tk, pad=10):
+        def h(im): 
+            return im.height() if im is not None else 0
+        r0 = max(h(top_left_tk), h(top_right_tk)) + pad
+        r1 = max(h(bottom_left_tk), h(bottom_right_tk)) + pad
+        grid.grid_rowconfigure(0, minsize=r0)
+        grid.grid_rowconfigure(1, minsize=r1)
+
+    def _render_histograms_gui_style(self, arr, *, w=620, h=420, bins=256):
+        """
+        GUI-style histograms (R, G, B) stacked vertically:
+        - Black filled histogram with thin white vertical stems
+        - Colored baseline per channel (red/green/blue)
+        - Metadata text: Index (mode bin), Pixels (count & %), Total pixels
+        - ~20% headroom on Y scale so it doesn't touch top
+        """
+        # layout
+        rows = 3
+        pad_outer = 14
+        vgap = 14
+        panel_h = (h - pad_outer*2 - vgap*(rows-1)) // rows
+        panel_w = w - pad_outer*2
+
+        # inside a panel
+        pad_l, pad_r, pad_t, pad_b = 14, 14, 28, 42   # room for title & foot
+        axis_col = (105, 105, 105)
+        grid_col = (228, 228, 228)
+        fill_col = (0, 0, 0)
+        stems_col = (255, 255, 255)
+
+        ch_colors = {
+            'R': (205, 40, 40),
+            'G': (40, 165, 60),
+            'B': (80, 70, 205),
+        }
+
+        img = Image.new("RGB", (w, h), (238, 238, 238))
+        draw = ImageDraw.Draw(img)
+        try:
+            font = ImageFont.load_default()
+        except Exception:
+            font = None
+
+        chans = [('R', arr[:, :, 0].ravel()),
+                ('G', arr[:, :, 1].ravel()),
+                ('B', arr[:, :, 2].ravel())]
+
+        for i, (label, ch) in enumerate(chans):
+            # histogram
+            hist, edges = np.histogram(ch, bins=bins, range=(0, 256))
+            total_px = int(hist.sum())
+            peak_bin = int(np.argmax(hist))
+            peak_ct = int(hist[peak_bin])
+            peak_pct = (100.0 * peak_ct / total_px) if total_px else 0.0
+
+            # headroom
+            ymax = hist.max() if hist.max() > 0 else 1
+            ylimit = int(np.ceil(ymax * 1.2))  # 20% headroom
+
+            # panel rect
+            top = pad_outer + i * (panel_h + vgap)
+            left = pad_outer
+            p_x0 = left
+            p_y0 = top
+            p_x1 = left + panel_w
+            p_y1 = top + panel_h
+
+            # background (fake dialog panel)
+            draw.rectangle([p_x0, p_y0, p_x1, p_y1], fill=(245, 245, 245), outline=(180, 180, 180))
+
+            # title bar text
+            draw.text((p_x0 + 8, p_y0 + 6), "Image Histogram", fill=(25, 25, 25), font=font)
+
+            # channel selector text (lightweight illusion)
+            draw.text((p_x0 + 8, p_y0 + 20), "Channel:", fill=(25, 25, 25), font=font)
+            # mark the active channel
+            opts = ['Red', 'Green', 'Blue']
+            for j, opt in enumerate(opts):
+                yopt = p_y0 + 38 + j*13
+                bullet = "◉ " if (opt[0] == label or (label=='R' and opt=='Red') or
+                                (label=='G' and opt=='Green') or (label=='B' and opt=='Blue')) else "○ "
+                draw.text((p_x0 + 16, yopt), bullet + opt, fill=(40, 40, 40), font=font)
+
+            # plotting box (axes)
+            x0 = p_x0 + pad_l + 130   # leave room for "Channel" stub at left
+            y0 = p_y0 + pad_t + 6
+            x1 = p_x1 - pad_r - 6
+            y1 = p_y1 - pad_b
+
+            # axes + grid
+            draw.rectangle([x0, y0, x1, y1], outline=axis_col, width=1)
+            for frac in (0.25, 0.5, 0.75):
+                gy = int(y1 - frac * (y1 - y0))
+                draw.line([(x0, gy), (x1, gy)], fill=grid_col, width=1)
+
+            # draw black filled histogram under curve
+            nb = len(hist)
+            span = x1 - x0
+            if nb <= 1:
+                nb = 1
+            step = span / nb
+
+            # polygon points (under curve)
+            poly = [(x0, y1)]
+            for b in range(nb):
+                x = x0 + b * step
+                val = hist[b]
+                y = y1 - (val / ylimit) * (y1 - y0)
+                poly.append((x, y))
+            poly.append((x1, y1))
+            draw.polygon(poly, fill=fill_col)
+
+            # thin white stems to mimic the example (sparse for readability)
+            stride = max(2, bins // 128)   # fewer when many bins
+            for b in range(0, nb, stride):
+                x = x0 + b * step
+                val = hist[b]
+                y = y1 - (val / ylimit) * (y1 - y0)
+                draw.line([(x, y1), (x, y)], fill=stems_col, width=1)
+
+            # colored baseline strip
+            base_col = ch_colors[label]
+            draw.rectangle([x0, y1 + 10, x1, y1 + 14], fill=base_col)
+
+            # x ticks (0..255 ends + mids)
+            for xt in [0, 50, 100, 150, 200, 255]:
+                xp = x0 + (xt / 255.0) * (x1 - x0)
+                draw.line([(xp, y1), (xp, y1 + 4)], fill=axis_col)
+                draw.text((xp - 6, y1 + 16), str(xt), fill=(60, 60, 60), font=font)
+
+            # footer metadata (index / pixels / total)
+            meta_y = y1 + 26
+            draw.text((x0, meta_y), f"Index: {peak_bin:>3}", fill=(35, 35, 35), font=font)
+            meta_x2 = x0 + 140
+            draw.text((meta_x2, meta_y), f"Pixels: {peak_ct:,} ({peak_pct:.1f}%)", fill=(35, 35, 35), font=font)
+            meta_x3 = x0 + 340
+            draw.text((meta_x3, meta_y), f"Total pixels: {total_px:,}", fill=(35, 35, 35), font=font)
+
+        return img
+
 
     def browse_analysis_image(self):
         path = filedialog.askopenfilename(title="Select Image", filetypes=[("Image files", "*.png *.bmp *.jpg *.jpeg *.gif")])
@@ -2276,9 +2428,12 @@ class StegApp(TkinterDnD.Tk):
         self.analysis_image_path.set("")
         self.analysis_cover_hint_path.set("")
         self.analysis_text.delete(1.0, tk.END)
-        for lbl in (self.viz_lsb_label, self.viz_heat_label, self.viz_hist_label, self.viz_diff_label):
-            lbl.configure(image='', text="")
-            lbl.image = None
+
+        # restore titles, clear images
+        self.viz_lsb_label.configure(image="", text="Cover Histogram (optional)"); self.viz_lsb_label.image = None
+        self.viz_heat_label.configure(image="", text="Stego Histogram");           self.viz_heat_label.image = None
+        self.viz_hist_label.configure(image="", text="LSB Plane (combined RGB)");  self.viz_hist_label.image = None
+        self.viz_diff_label.configure(image="", text="LSB-Variance Heatmap");      self.viz_diff_label.image = None
 
     def run_image_analysis(self):
         path = self.analysis_image_path.get().strip()
@@ -2290,50 +2445,85 @@ class StegApp(TkinterDnD.Tk):
             img = Image.open(path).convert('RGB')
             arr = np.array(img, dtype=np.uint8)
 
-            # Metrics
+            # ---- Metrics (unchanged) ----
             chi_p = self._chi_square_lsb_pvalue(arr)
             corr = self._neighbor_correlation(arr)
             lsb_ratio = self._lsb_one_ratio(arr)
-            heat = self._lsb_variance_heatmap(arr, block=8)  # 8x8 blocks
+            heat = self._lsb_variance_heatmap(arr, block=8)
 
-            # Visuals
-            lsb_img = self._render_lsb_plane(arr)                   # grayscale LSB map
-            hist_img = self._render_histograms(arr)                 # simple RGB hist
-            heat_img = self._render_heatmap_image(heat, img.size)   # upscaled for display
+            # ---- Visuals (TOP ROW unchanged) ----
+            lsb_img  = self._render_lsb_plane(arr)                  # top-left
+            heat_img = self._render_heatmap_image(heat, img.size)   # top-right
 
-            # Diff amplification (needs optional original)
-            diff_img = None
+            # ---- NEW: top row = histograms ----
+            # top-right: suspected stego histogram
+            hist_stego_img = self._render_histograms_gui_style(arr)
+
+            hist_cover_img = None
             cover_hint = self.analysis_cover_hint_path.get().strip()
             if cover_hint and os.path.exists(cover_hint):
-                diff_img = self._render_diff_amplified(Image.open(cover_hint).convert('RGB'), img, factor=16)
+                cover_img = Image.open(cover_hint).convert('RGB')
+                cover_arr = np.array(cover_img, dtype=np.uint8)
+                hist_cover_img = self._render_histograms_gui_style(cover_arr)
 
-            # Put text report
+
+            # ---- Report text (matches new layout) ----
+            has_cover = bool(self.analysis_cover_hint_path.get().strip() and os.path.exists(self.analysis_cover_hint_path.get().strip()))
+
             report = []
             report.append("Steganalysis Report\n-------------------")
             report.append(f"Image: {os.path.basename(path)}  |  {img.size[0]}×{img.size[1]}  |  RGB")
             report.append(f"Chi-square LSB p-value (higher ~ more random LSBs): {chi_p:.4f}")
-            report.append(f"Neighbor correlation (0..1). Natural images ~0.90–0.99: {corr:.4f}")
+            report.append(f"Neighbor correlation (0–1). Natural images ~0.90–0.99: {corr:.4f}")
             report.append(f"LSB(1-bit) ones ratio (should be near 0.5): {lsb_ratio:.4f}")
-            report.append("Heatmap: bright regions = higher LSB variability (possible embedding zones)\n")
+            if has_cover:
+                report.append("Top row: Cover histogram (left) vs Stego histogram (right).")
+            else:
+                report.append("Top row: Stego histogram (right). (Provide a cover to compare on the left.)")
+            report.append("Bottom row: LSB plane (left) and LSB-variance heatmap (right).")
+            report.append("")  # blank line
+
             self.analysis_text.delete(1.0, tk.END)
             self.analysis_text.insert(1.0, "\n".join(report))
 
-            # Display images
+
+            # ---- Display images ----
             def _to_tk(im, max_wh=(450, 450)):
                 imc = im.copy()
                 imc.thumbnail(max_wh)
-                tkimg = ImageTk.PhotoImage(imc)
-                return tkimg
+                return ImageTk.PhotoImage(imc)
 
-            lsb_tk = _to_tk(lsb_img); self.viz_lsb_label.configure(image=lsb_tk); self.viz_lsb_label.image = lsb_tk
-            heat_tk = _to_tk(heat_img); self.viz_heat_label.configure(image=heat_tk); self.viz_heat_label.image = heat_tk
-            hist_tk = _to_tk(hist_img); self.viz_hist_label.configure(image=hist_tk); self.viz_hist_label.image = hist_tk
-
-            if diff_img is not None:
-                diff_tk = _to_tk(diff_img)
-                self.viz_diff_label.configure(image=diff_tk); self.viz_diff_label.image = diff_tk
+            # top row (histograms)
+            if hist_cover_img is not None:
+                cov_tk = _to_tk(hist_cover_img)
+                self.viz_lsb_label.configure(image=cov_tk)  # <-- no text=""
+                self.viz_lsb_label.image = cov_tk
             else:
-                self.viz_diff_label.configure(image='', text="(Optional) Provide cover to see amplified difference")
+                cov_tk = None
+                self.viz_lsb_label.configure(image="", text="Cover Histogram (optional)")
+                self.viz_lsb_label.image = None
+
+            stego_tk = _to_tk(hist_stego_img)
+            self.viz_heat_label.configure(image=stego_tk)   # <-- no text=""
+            self.viz_heat_label.image = stego_tk
+
+            # bottom row (LSB + heatmap)
+            lsb_tk  = _to_tk(lsb_img)
+            heat_tk = _to_tk(heat_img)
+            self.viz_hist_label.configure(image=lsb_tk)     # <-- no text=""
+            self.viz_hist_label.image  = lsb_tk
+            self.viz_diff_label.configure(image=heat_tk)    # <-- no text=""
+            self.viz_diff_label.image = heat_tk
+
+
+            # ensure row heights fit what we just displayed
+            self._ia_set_row_heights(
+                grid=self.viz_lsb_label.master,
+                top_left_tk=cov_tk,
+                top_right_tk=stego_tk,
+                bottom_left_tk=lsb_tk,
+                bottom_right_tk=heat_tk
+            )
 
         except Exception as e:
             messagebox.showerror("Analysis Error", str(e))
@@ -2427,12 +2617,105 @@ class StegApp(TkinterDnD.Tk):
         h_norm = (heat*255.0).clip(0,255).astype(np.uint8)
         hm = Image.fromarray(h_norm, mode='L').resize(size, Image.NEAREST).convert('RGB')
         return hm
+    
+    def _render_histograms_styled(self, arr, *, w=560, h=360, bins=32,
+                              bar_color=(160, 70, 255),  # purple-ish
+                              title=None):
+        """
+        Paper-style histograms for R, G, B channels (stacked vertically).
+        - coarse 'bins' for chunky bars (example-like look)
+        - axes + light grid + labels
+        - returns one RGB image containing three small plots (R,G,B)
+        """
+        # ---- layout ----
+        rows = 3
+        pad_outer = 16
+        vgap = 16                      # gap between subplots
+        plot_h = (h - pad_outer*2 - vgap*(rows-1)) // rows
+        plot_w = w - pad_outer*2
+        pad_l, pad_r, pad_t, pad_b = 40, 12, 24, 28   # in-axes padding
+
+        # canvas
+        img = Image.new("RGB", (w, h), (255, 255, 255))
+        draw = ImageDraw.Draw(img)
+        try:
+            font = ImageFont.load_default()
+        except Exception:
+            font = None
+
+        # optional title at the very top
+        if title:
+            draw.text((pad_outer, 6), title, fill=(30, 30, 30), font=font)
+
+        # channels (R, G, B) — same order as your current function
+        chans = [arr[:, :, 0].ravel(), arr[:, :, 1].ravel(), arr[:, :, 2].ravel()]
+        labels = ["R", "G", "B"]
+
+        # ticks for x axis
+        xticks = [0, 50, 100, 150, 200, 255]
+
+        for i, ch in enumerate(chans):
+            # histogram with coarse bins (0..256)
+            hist, edges = np.histogram(ch, bins=bins, range=(0, 256))
+            hist = hist.astype(np.float64)
+            ymax = hist.max() if hist.max() > 0 else 1.0
+
+            # subplot top-left corner
+            top = pad_outer + i * (plot_h + vgap)
+            left = pad_outer
+
+            # axes rect (data area)
+            x0 = left + pad_l
+            y0 = top + pad_t
+            x1 = left + plot_w - pad_r
+            y1 = top + plot_h - pad_b
+            draw.rectangle([x0, y0, x1, y1], outline=(80, 80, 80), width=1)
+
+            # grid lines (horizontal)
+            for frac in (0.25, 0.5, 0.75):
+                gy = int(y1 - frac * (y1 - y0))
+                draw.line([(x0, gy), (x1, gy)], fill=(220, 220, 220), width=1)
+
+            # x-axis ticks & labels
+            for xt in xticks:
+                # map intensity (0..255) to x-pixel
+                xpix = x0 + int((xt / 255.0) * (x1 - x0))
+                draw.line([(xpix, y1), (xpix, y1 + 4)], fill=(80, 80, 80), width=1)
+                draw.text((xpix - 6, y1 + 6), str(xt), fill=(60, 60, 60), font=font)
+
+            # y-axis tick labels (0, mid, max)
+            for frac, lab in [(0.0, "0"), (0.5, f"{int(ymax*0.5)}"), (1.0, f"{int(ymax)}")]:
+                yp = int(y1 - frac * (y1 - y0))
+                draw.text((x0 - 32, yp - 6), lab, fill=(60, 60, 60), font=font)
+
+            # bars
+            nb = len(hist)
+            bar_w = max(1, (x1 - x0) // nb)
+            for b in range(nb):
+                v = hist[b]
+                if v <= 0: 
+                    continue
+                xA = x0 + b * bar_w
+                xB = xA + bar_w - 1
+                yB = y1
+                yA = int(y1 - (v / ymax) * (y1 - y0))
+                draw.rectangle([xA, yA, xB, yB], fill=bar_color, outline=bar_color)
+
+            # subplot label (R/G/B)
+            draw.text((x0 - 28, y0 - 16), labels[i], fill=(50, 50, 50), font=font)
+
+            # axis labels (y for each subplot, x only for bottom subplot)
+            draw.text((left, y0 - 16), "No of pixels", fill=(50, 50, 50), font=font)
+            if i == rows - 1:
+                draw.text((x0 + (x1 - x0)//2 - 40, y1 + 20), "Pixel intensity", fill=(50, 50, 50), font=font)
+
+        return img
 
     def _render_histograms(self, arr):
         """
-        Quick RGB histogram render (256x100 per channel stacked).
+        Quick RGB histogram render (256x120 per channel stacked).
         """
-        H, W = 100, 256
+        H, W = 120, 256
         canvas = Image.new('RGB', (W, H*3), (240,240,240))
         for i, ch in enumerate([0,1,2]):
             hist = np.bincount(arr[:,:,ch].ravel(), minlength=256).astype(np.float32)
@@ -2461,10 +2744,12 @@ class StegApp(TkinterDnD.Tk):
         return Image.fromarray(d, mode='RGB')
 
     def setup_audio_analysis_tab(self, parent):
-        container = tk.Frame(parent, bg='#f5f5f5')
-        container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        container = self.create_scrolled_frame(parent)   # instead of tk.Frame
+        pad = tk.Frame(container, bg='#f5f5f5')
+        pad.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        picks = tk.LabelFrame(container, text="Select WAV(s) to Analyze", bg='#f5f5f5', padx=10, pady=10)
+
+        picks = tk.LabelFrame(pad, text="Select WAV(s) to Analyze", bg='#f5f5f5', padx=10, pady=10)
         picks.pack(fill=tk.X)
 
         self.an_audio_path = tk.StringVar()
@@ -2485,7 +2770,7 @@ class StegApp(TkinterDnD.Tk):
         tk.Label(r3, text="Assumed LSBs for Analysis:", bg='#f5f5f5').pack(side=tk.LEFT)
         tk.Scale(r3, from_=1, to=8, orient=HORIZONTAL, variable=self.an_audio_lsbs, bg='#f5f5f5', length=200).pack(side=tk.LEFT, padx=10)
 
-        actions = tk.Frame(container, bg='#f5f5f5'); actions.pack(fill=tk.X, pady=8)
+        actions = tk.Frame(pad, bg='#f5f5f5'); actions.pack(fill=tk.X, pady=8)
         tk.Button(actions, text="🔎 Run Audio Analysis", command=self.run_audio_stego_analysis,
                 bg='#4CAF50', fg='white', font=('Helvetica', 11, 'bold')).pack(side=tk.LEFT, padx=4)
         tk.Button(actions, text="💾 Save Report", command=self._an_save_report,
@@ -2494,17 +2779,27 @@ class StegApp(TkinterDnD.Tk):
                 bg='#009688', fg='white').pack(side=tk.LEFT, padx=4)
         tk.Button(actions, text="🗑️ Clear", command=self._an_clear_ui, bg='#FF9800', fg='white').pack(side=tk.LEFT, padx=4)
 
-        self.an_audio_text = tk.Text(container, height=10, bg='#f8f8f8', relief=tk.SUNKEN, bd=2, font=('Consolas', 10))
+        self.an_audio_text = tk.Text(pad, height=10, bg='#f8f8f8', relief=tk.SUNKEN, bd=2, font=('Consolas', 10))
         self.an_audio_text.pack(fill=tk.X, pady=6)
 
-        viz = tk.LabelFrame(container, text="Visual Diagnostics", bg='#f5f5f5', padx=10, pady=10)
+        viz = tk.LabelFrame(pad, text="Visual Diagnostics", bg='#f5f5f5', padx=10, pady=10)
         viz.pack(fill=tk.BOTH, expand=True)
         grid = tk.Frame(viz, bg='#f5f5f5'); grid.pack(fill=tk.BOTH, expand=True)
 
-        self.viz_wave = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2, width=50, height=18)
-        self.viz_spec = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2, width=50, height=18)
-        self.viz_lsbvar = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2, width=50, height=18)
-        self.viz_diffaudio = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2, width=50, height=18)
+        cap_font = ('Helvetica', 10, 'bold')
+        self.viz_wave = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2, 
+                                compound='top', font=cap_font,
+                                text="Before Steganography (Cover Waveform)")
+        self.viz_spec = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2, 
+                                compound='top', font=cap_font,
+                                text="After Steganography (Stego Waveform)")
+        self.viz_lsbvar = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2, 
+                                compound='top', font=cap_font,
+                                text="Spectrogram (ch 1)")
+        self.viz_diffaudio = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2,
+                                    compound='top', font=cap_font,
+                                    text="Diff vs Cover (or LSB Variance)")
+
 
         self.viz_wave.grid(row=0, column=0, padx=5, pady=5, sticky='nsew')
         self.viz_spec.grid(row=0, column=1, padx=5, pady=5, sticky='nsew')
@@ -2515,6 +2810,50 @@ class StegApp(TkinterDnD.Tk):
         grid.grid_columnconfigure(1, weight=1)
         grid.grid_rowconfigure(0, weight=1)
         grid.grid_rowconfigure(1, weight=1)
+
+    def _render_waveform_chart(self, samples, title=None, w=1024, h=220):
+        """
+        Waveform with midline and optional title text (first channel).
+        """
+        ch = samples[:, 0].astype(np.float32)
+        # fit/trim to width
+        if ch.size > w:
+            idx = np.linspace(0, ch.size - 1, w).astype(int)
+            ch = ch[idx]
+        else:
+            pad = w - ch.size
+            if pad > 0:
+                ch = np.pad(ch, (0, pad), mode='edge')
+
+        # normalize to -1..1
+        m = max(np.max(np.abs(ch)), 1e-9)
+        y = (ch / m) * 0.9
+
+        img = Image.new('RGB', (w, h), (245, 245, 245))
+        px = img.load()
+        mid = h // 2
+
+        # midline
+        for x in range(w):
+            px[x, mid] = (190, 190, 190)
+
+        # waveform (vertical sticks)
+        for x in range(w):
+            ypix = int(mid - y[x] * (h // 2 - 10))
+            y0, y1 = sorted((mid, ypix))
+            for yy in range(y0, y1 + 1):
+                px[x, yy] = (30, 60, 140)
+
+        # title
+        if title:
+            draw = ImageDraw.Draw(img)
+            try:
+                font = ImageFont.load_default()
+            except Exception:
+                font = None
+            draw.text((8, 6), title, fill=(20, 20, 20), font=font)
+
+        return img
 
     def _an_browse_audio(self):
         path = filedialog.askopenfilename(title="Select WAV", filetypes=[("WAV files", "*.wav")])
@@ -2529,9 +2868,68 @@ class StegApp(TkinterDnD.Tk):
         self.an_audio_cover_hint.set("")
         self.an_audio_lsbs.set(1)
         self.an_audio_text.delete(1.0, tk.END)
-        for lbl in (self.viz_wave, self.viz_spec, self.viz_lsbvar, self.viz_diffaudio):
-            lbl.configure(image='', text="")
-            lbl.image = None
+
+        self.viz_wave.configure(image='', text="Before Steganography (Cover Waveform)"); self.viz_wave.image = None
+        self.viz_spec.configure(image='', text="After Steganography (Stego Waveform)");  self.viz_spec.image = None
+        self.viz_lsbvar.configure(image='', text="Spectrogram (ch 1)");                  self.viz_lsbvar.image = None
+        self.viz_diffaudio.configure(image='', text="Diff vs Cover (or LSB Variance)");  self.viz_diffaudio.image = None
+
+
+    def _render_lsb_var_plot(self, var_series, w=1024, h=220, title=None):
+        """
+        Render block variance series as a simple line plot:
+        x = block index, y = normalized variance (0..1).
+        """
+        if var_series.size == 0:
+            return Image.new('RGB', (w, h), (245, 245, 245))
+
+        # resample series to width w
+        xs = np.linspace(0, var_series.size - 1, w).astype(int)
+        v = var_series[xs].astype(np.float32)
+        v = np.clip(v, 0.0, 1.0)
+
+        pad_top, pad_bot, pad_lr = 24, 20, 40
+        plot_w = w - 2*pad_lr
+        plot_h = h - (pad_top + pad_bot)
+
+        img = Image.new('RGB', (w, h), (245, 245, 245))
+        draw = ImageDraw.Draw(img)
+
+        # axes rectangle
+        x0, y0 = pad_lr, pad_top
+        x1, y1 = x0 + plot_w, y0 + plot_h
+        draw.rectangle([x0, y0, x1, y1], outline=(180, 180, 180), width=1)
+
+        # horizontal gridlines at 0, .25, .5, .75, 1.0
+        for frac in (0.0, 0.25, 0.5, 0.75, 1.0):
+            yy = int(y1 - frac * plot_h)
+            draw.line([(x0, yy), (x1, yy)], fill=(220, 220, 220), width=1)
+
+        # polyline for v
+        last = None
+        for i in range(plot_w):
+            # map i->x pixel, v[i]->y pixel
+            vi = v[int(i * (len(v) - 1) / max(plot_w - 1, 1))]
+            px = x0 + i
+            py = int(y1 - vi * plot_h)
+            if last is not None:
+                draw.line([last, (px, py)], fill=(30, 30, 30), width=2)
+            last = (px, py)
+
+        # title and tiny ticks
+        if title:
+            try:
+                font = ImageFont.load_default()
+            except Exception:
+                font = None
+            draw.text((8, 6), title, fill=(20, 20, 20), font=font)
+            # y-axis ticks labels
+            for frac, lab in [(1.0, "1.0"), (0.5, "0.5"), (0.0, "0.0")]:
+                yy = int(y1 - frac * plot_h)
+                draw.text((6, yy - 6), lab, fill=(100, 100, 100), font=font)
+
+        return img
+
 
     def run_audio_stego_analysis(self):
         path = self.an_audio_path.get().strip()
@@ -2584,16 +2982,58 @@ class StegApp(TkinterDnD.Tk):
                 _, cover_samples = self._wav_read_any(cover_path)
                 diff_img = self._render_audio_diff(cover_samples, samples)
 
-            # ---- visuals (wave + quick spectrogram + bar for variance series) ----
-            wave_img = self._render_waveform(samples)
-            spec_img = self._render_spectrogram(samples[:, 0])  # first channel quick look
-            lsbvar_img = self._render_lsb_var_bar(lsb_var_series)
+            # ---- visuals ----
+            # BEFORE (cover) waveform for top-left
+            cover_path = self.an_audio_cover_hint.get().strip()
+            cover_samples = None
+            if cover_path and os.path.exists(cover_path):
+                _, cover_samples = self._wav_read_any(cover_path)
+                wave_before_img = self._render_waveform_chart(cover_samples, title="Before Steganography")
+            else:
+                # fallback note if no cover provided
+                wave_before_img = Image.new('RGB', (1024, 220), (245, 245, 245))
+                d = ImageDraw.Draw(wave_before_img)
+                d.text((10, 10), "Provide cover WAV to view 'Before Steganography' waveform", fill=(50, 50, 50))
+
+            # AFTER (stego) waveform for bottom-left
+            wave_after_img = self._render_waveform_chart(samples, title="After Steganography")
+
+            # Keep spectrogram at top-right (first channel quick look)
+            spec_img = self._render_spectrogram(samples[:, 0])
+
+            # Keep LSB variance bars at bottom-right
+            lsb_var_series = self._lsb_block_variance_1d(samples, k, block=2048)  # already computed earlier; keep line if you use later too
+            lsbvar_img = self._render_lsb_var_plot(
+                lsb_var_series,
+                title=f"Block Variance (bit-plane {k})"
+            )
+
+            # ---- show images ----
+            def _to_tk(im, max_wh=(450, 450)):
+                imc = im.copy(); imc.thumbnail(max_wh)
+                return ImageTk.PhotoImage(imc)
+
+            before_tk = _to_tk(wave_before_img)
+            self.viz_wave.configure(image=before_tk) ; self.viz_wave.image = before_tk
+
+            after_tk = _to_tk(wave_after_img)
+            self.viz_spec.configure(image=after_tk)  ; self.viz_spec.image = after_tk
+
+            spec_tk = _to_tk(spec_img)
+            self.viz_lsbvar.configure(image=spec_tk) ; self.viz_lsbvar.image = spec_tk
+
+            if diff_img is not None:
+                diff_tk = _to_tk(diff_img)
+                self.viz_diffaudio.configure(image=diff_tk) ; self.viz_diffaudio.image = diff_tk
+            else:
+                var_tk = _to_tk(lsbvar_img)
+                self.viz_diffaudio.configure(image=var_tk) ; self.viz_diffaudio.image = var_tk
 
             # ---- report text ----
             sr = params.framerate
             dur = N / float(sr) if sr else 0.0
             lines = []
-            lines.append("Auto-detect (scan LSB=1..8): higher score = more 'stego-ish'")
+            lines.append("Auto-detect (scan LSB=1..8): higher score = more likely to be stego")
             for r in autodet_rows:
                 lines.append(
                     f"LSBs={r['lsbs']}: score={r['score']:.3f} | "
@@ -2619,19 +3059,6 @@ class StegApp(TkinterDnD.Tk):
             self.an_audio_text.delete(1.0, tk.END)
             self.an_audio_text.insert(1.0, "\n".join(lines))
 
-            # ---- show images ----
-            def _to_tk(im, max_wh=(450, 450)):
-                imc = im.copy(); imc.thumbnail(max_wh)
-                return ImageTk.PhotoImage(imc)
-
-            wtk = _to_tk(wave_img); self.viz_wave.configure(image=wtk); self.viz_wave.image = wtk
-            stk = _to_tk(spec_img); self.viz_spec.configure(image=stk); self.viz_spec.image = stk
-            vtk = _to_tk(lsbvar_img); self.viz_lsbvar.configure(image=vtk); self.viz_lsbvar.image = vtk
-
-            if diff_img is not None:
-                dtk = _to_tk(diff_img); self.viz_diffaudio.configure(image=dtk); self.viz_diffaudio.image = dtk
-            else:
-                self.viz_diffaudio.configure(image='', text="(Optional) Provide cover WAV to see difference spikes")
 
         except Exception as e:
             messagebox.showerror("Analysis Error", str(e))
@@ -2782,7 +3209,7 @@ class StegApp(TkinterDnD.Tk):
                 px[x, yy] = (30,30,30)
         return img
 
-    def _render_spectrogram(self, mono, win=1024, hop=512):
+    def _render_spectrogram(self, mono, win=512, hop=256):
         """
         Very lightweight STFT log-magnitude spectrogram (grayscale).
         """
@@ -2811,7 +3238,9 @@ class StegApp(TkinterDnD.Tk):
         S = (S*255.0).astype(np.uint8)
         # flip freq so low at bottom
         S = np.flipud(S)
-        return Image.fromarray(S, mode='L').convert('RGB')
+        cmap = cm.get_cmap('magma')
+        rgba = cmap(S / 255.0, bytes=True)   # map grayscale to RGBA
+        return Image.fromarray(rgba[:, :, :3], mode='RGB')
 
     def _render_lsb_var_bar(self, var_series, height=120):
         """
@@ -2941,8 +3370,8 @@ class StegApp(TkinterDnD.Tk):
                 lines.append(f"LSB ones-ratio (overall): {m.get('lsb_ratio_overall','?')}")
                 lines.append(f"Mean LSB variance (blocks): {m.get('lsb_var_mean','?')}")
                 lines.append("")
-                lines.append("Auto-detect (scan LSB=1..4):")
-                for r in data.get("autodetect_scan_1to4", []):
+                lines.append("Auto-detect (scan LSB=1..8):")
+                for r in data.get("autodetect_scan_1to8", []):
                     lines.append(f"  LSBs={r['lsbs']}: score={r['score']:.3f} | chi_p={r['chi_p']:.4f} corr={r['corr']:.4f} lsb_ratio={r['lsb_ratio']:.4f} var={r['lsb_var_mean']:.4f}")
                 best = data.get("autodetect_best")
                 if best:
@@ -2968,8 +3397,11 @@ class StegApp(TkinterDnD.Tk):
 
     # -------------------- VIDEO ANALYSIS TAB --------------------
     def setup_video_analysis_tab(self, parent):
-        container = tk.Frame(parent, bg='#f5f5f5')
-        container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        container = self.create_scrolled_frame(parent)   # same helper used by image analysis
+        # add padding wrapper (optional, keeps the same margins you had)
+        pad = tk.Frame(container, bg='#f5f5f5')
+        pad.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
 
         picks = tk.LabelFrame(container, text="Select Video(s) to Analyze", bg='#f5f5f5', padx=10, pady=10)
         picks.pack(fill=tk.X)

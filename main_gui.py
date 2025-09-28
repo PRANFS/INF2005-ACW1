@@ -3440,10 +3440,20 @@ class StegApp(TkinterDnD.Tk):
         viz.pack(fill=tk.BOTH, expand=True)
         grid = tk.Frame(viz, bg='#f5f5f5'); grid.pack(fill=tk.BOTH, expand=True)
 
-        self.viz_video_lsb_label = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2, width=50, height=18)
-        self.viz_video_heat_label = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2, width=50, height=18)
-        self.viz_video_hist_label = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2, width=50, height=18)
-        self.viz_video_diff_label = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2, width=50, height=18)
+        cap_font = ('Helvetica', 10, 'bold')
+        self.viz_video_lsb_label = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2,
+                                            compound='top', font=cap_font,
+                                            text="Cover Histogram (optional)")
+        self.viz_video_heat_label = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2,
+                                            compound='top', font=cap_font,
+                                            text="Stego Histogram")
+        self.viz_video_hist_label = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2,
+                                            compound='top', font=cap_font,
+                                            text="LSB Plane (combined RGB)")
+        self.viz_video_diff_label = tk.Label(grid, bg='lightgrey', relief=tk.SUNKEN, bd=2,
+                                            compound='top', font=cap_font,
+                                            text="LSB-Variance Heatmap")
+
 
         self.viz_video_lsb_label.grid(row=0, column=0, padx=5, pady=5, sticky='nsew')
         self.viz_video_heat_label.grid(row=0, column=1, padx=5, pady=5, sticky='nsew')
@@ -3468,9 +3478,15 @@ class StegApp(TkinterDnD.Tk):
         self.an_video_cover_hint.set("")
         self.an_video_lsbs.set(1)
         self.an_video_text.delete(1.0, tk.END)
-        for lbl in (self.viz_video_lsb_label, self.viz_video_heat_label, self.viz_video_hist_label, self.viz_video_diff_label):
-            lbl.configure(image='', text="")
-            lbl.image = None
+        # Restore default text for each label (matching setup_video_analysis_tab)
+        self.viz_video_lsb_label.configure(image='', text="Cover Histogram (optional)")
+        self.viz_video_lsb_label.image = None
+        self.viz_video_heat_label.configure(image='', text="Stego Histogram")
+        self.viz_video_heat_label.image = None
+        self.viz_video_hist_label.configure(image='', text="LSB Plane (combined RGB)")
+        self.viz_video_hist_label.image = None
+        self.viz_video_diff_label.configure(image='', text="LSB-Variance Heatmap")
+        self.viz_video_diff_label.image = None
 
     def run_video_stego_analysis(self):
         if shutil.which("ffmpeg") is None:
@@ -3526,16 +3542,19 @@ class StegApp(TkinterDnD.Tk):
 
                 # ---- optional difference view with original cover ----
                 diff_img = None
+                hist_cover_img = None
                 cover_path = self.an_video_cover_hint.get().strip()
                 if cover_path and os.path.exists(cover_path):
                     cover_iframe_path = self._extract_first_iframe(cover_path, tmpdir, "cover_iframe.png")
                     if os.path.exists(cover_iframe_path):
                         cover_img = Image.open(cover_iframe_path).convert('RGB')
+                        cover_arr = np.array(cover_img, dtype=np.uint8)
                         diff_img = self._render_diff_amplified(cover_img, img, factor=16)
+                        hist_cover_img = self._render_histograms_gui_style(cover_arr)  # Changed to match Image Analysis style
 
                 # ---- visuals ----
                 lsb_img = self._render_lsb_plane(arr)                   
-                hist_img = self._render_histograms(arr)                 
+                hist_img = self._render_histograms_gui_style(arr)     # Changed to match Image Analysis style                 
                 heat_img = self._render_heatmap_image(heat, img.size)   
 
                 # ---- video params ----
@@ -3575,15 +3594,31 @@ class StegApp(TkinterDnD.Tk):
                     imc = im.copy(); imc.thumbnail(max_wh)
                     return ImageTk.PhotoImage(imc)
 
-                lsb_tk = _to_tk(lsb_img); self.viz_video_lsb_label.configure(image=lsb_tk); self.viz_video_lsb_label.image = lsb_tk
-                heat_tk = _to_tk(heat_img); self.viz_video_heat_label.configure(image=heat_tk); self.viz_video_heat_label.image = heat_tk
-                hist_tk = _to_tk(hist_img); self.viz_video_hist_label.configure(image=hist_tk); self.viz_video_hist_label.image = hist_tk
+                # Assign to match labels: Cover Hist (if available), Stego Hist, LSB Plane, Heatmap/Diff
+                if hist_cover_img is not None:
+                    cov_tk = _to_tk(hist_cover_img)
+                    self.viz_video_lsb_label.configure(image=cov_tk)
+                    self.viz_video_lsb_label.image = cov_tk
+                else:
+                    self.viz_video_lsb_label.configure(image='', text="Cover Histogram (optional)")
+                    self.viz_video_lsb_label.image = None
+
+                stego_tk = _to_tk(hist_img)
+                self.viz_video_heat_label.configure(image=stego_tk)
+                self.viz_video_heat_label.image = stego_tk
+
+                lsb_tk = _to_tk(lsb_img)
+                self.viz_video_hist_label.configure(image=lsb_tk)
+                self.viz_video_hist_label.image = lsb_tk
 
                 if diff_img is not None:
                     diff_tk = _to_tk(diff_img)
-                    self.viz_video_diff_label.configure(image=diff_tk); self.viz_video_diff_label.image = diff_tk
+                    self.viz_video_diff_label.configure(image=diff_tk)
+                    self.viz_video_diff_label.image = diff_tk
                 else:
-                    self.viz_video_diff_label.configure(image='', text="(Optional) Provide cover video to see amplified difference")
+                    heat_tk = _to_tk(heat_img)
+                    self.viz_video_diff_label.configure(image=heat_tk)
+                    self.viz_video_diff_label.image = heat_tk
 
         except Exception as e:
             messagebox.showerror("Analysis Error", str(e))

@@ -3999,8 +3999,6 @@ class StegApp(TkinterDnD.Tk):
         return img
 
     def _render_spectrogram(self, mono, win=512, hop=256):
-
-    def _render_spectrogram(self, mono, win=512, hop=256):
         """
         Very lightweight STFT log-magnitude spectrogram (grayscale).
         """

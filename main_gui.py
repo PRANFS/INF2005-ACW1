@@ -1014,15 +1014,16 @@ class StegApp(TkinterDnD.Tk):
     def get_video_params(self, video_path):
         if shutil.which("ffprobe") is None:
             raise ValueError("FFprobe not found. Please install FFmpeg.")
-        # Get video stream info
+        
+        # Get stream info (width, height, fps)
         result = subprocess.run(
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=width,height,r_frame_rate,duration",
-             "-of", "json", video_path],
+            "-show_entries", "stream=width,height,r_frame_rate",
+            "-of", "json", video_path],
             capture_output=True, text=True
         )
         if result.returncode != 0:
-            raise ValueError("Failed to get video info.")
+            raise ValueError("Failed to get video stream info.")
         data = json.loads(result.stdout)
         if not data.get("streams"):
             raise ValueError("No video stream found.")
@@ -1031,18 +1032,27 @@ class StegApp(TkinterDnD.Tk):
         height = int(stream.get("height", 0))
         fps_frac = stream.get("r_frame_rate", "0/1")
         fps = eval(fps_frac) if '/' in fps_frac else float(fps_frac)
-        duration = float(stream.get("duration", 0))
-
-        # Count I-frames
+        
+        # Get overall duration from format level (more reliable for MKV/MP4)
+        result_format = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "json", video_path],
+            capture_output=True, text=True
+        )
+        if result_format.returncode != 0:
+            raise ValueError("Failed to get video duration.")
+        format_data = json.loads(result_format.stdout)
+        duration = float(format_data.get("format", {}).get("duration", 0))
+        
+        # Count I-frames (unchanged)
         result_frames = subprocess.run(
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "frame=pict_type", "-of", "json", video_path],
+            "-show_entries", "frame=pict_type", "-of", "json", video_path],
             capture_output=True, text=True
         )
         frames_data = json.loads(result_frames.stdout)
-        i_frame_count = sum(1 for f in frames_data.get(
-            "frames", []) if f.get("pict_type") == "I")
-
+        i_frame_count = sum(1 for f in frames_data.get("frames", []) if f.get("pict_type") == "I")
+        
         return {
             'width': width,
             'height': height,

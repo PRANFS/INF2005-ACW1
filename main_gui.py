@@ -191,6 +191,16 @@ class StegApp(TkinterDnD.Tk):
         self.video_payload_text = tk.StringVar()
         self.show_video_key = tk.BooleanVar(value=False)
 
+        # Image encode specific: scaling and region
+        self.cover_orig_path = None
+        self.orig_size = None
+        self.scale = 1.0
+        self.scaled_size = (0, 0)
+        self.embed_region_orig = None
+        self.rect = None
+        self.start_canvas_x = None
+        self.start_canvas_y = None
+
         self.setup_ui()
 
     def setup_ui(self):
@@ -387,7 +397,20 @@ class StegApp(TkinterDnD.Tk):
         self.cover_canvas = tk.Canvas(
             cover_canvas_frame, bg="lightgrey", relief=tk.SUNKEN, bd=2
         )
-        self.cover_canvas.pack(fill=tk.BOTH, expand=True)
+
+        vscroll_cover = ttk.Scrollbar(
+            cover_canvas_frame, orient='vertical', command=self.cover_canvas.yview)
+        hscroll_cover = ttk.Scrollbar(
+            cover_canvas_frame, orient='horizontal', command=self.cover_canvas.xview)
+        self.cover_canvas.configure(
+            yscrollcommand=vscroll_cover.set, xscrollcommand=hscroll_cover.set)
+
+        self.cover_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vscroll_cover.pack(side=tk.RIGHT, fill=tk.Y)
+        hscroll_cover.pack(side=tk.BOTTOM, fill=tk.X)
+
+        # Bind configure for scaling
+        self.cover_canvas.bind("<Configure>", self.on_cover_canvas_configure)
 
         stego_frame = tk.Frame(display_frame, bg='#f5f5f5')
         stego_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5)
@@ -401,10 +424,83 @@ class StegApp(TkinterDnD.Tk):
         self.stego_canvas = tk.Canvas(
             stego_canvas_frame, bg="lightgrey", relief=tk.SUNKEN, bd=2
         )
-        self.stego_canvas.pack(fill=tk.BOTH, expand=True)
+
+        vscroll_stego = ttk.Scrollbar(
+            stego_canvas_frame, orient='vertical', command=self.stego_canvas.yview)
+        hscroll_stego = ttk.Scrollbar(
+            stego_canvas_frame, orient='horizontal', command=self.stego_canvas.xview)
+        self.stego_canvas.configure(
+            yscrollcommand=vscroll_stego.set, xscrollcommand=hscroll_stego.set)
+
+        self.stego_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vscroll_stego.pack(side=tk.RIGHT, fill=tk.Y)
+        hscroll_stego.pack(side=tk.BOTTOM, fill=tk.X)
 
         self.setup_canvas_bindings()
         self.toggle_payload_input()
+
+    def on_cover_canvas_configure(self, event):
+        if hasattr(self, 'cover_orig_path') and self.cover_orig_path:
+            self.redisplay_cover()
+
+    def redisplay_cover(self):
+        if not self.cover_orig_path or not os.path.exists(self.cover_orig_path):
+            return
+        try:
+            orig_img = Image.open(self.cover_orig_path)
+            orig_w, orig_h = self.orig_size or orig_img.size
+            self.orig_size = (orig_w, orig_h)
+
+            self.cover_canvas.update_idletasks()
+            c_w = self.cover_canvas.winfo_width()
+            c_h = self.cover_canvas.winfo_height()
+            if c_w <= 1 or c_h <= 1:
+                return
+
+            scale_w = c_w / orig_w
+            scale_h = c_h / orig_h
+            self.scale = min(scale_w, scale_h, 1.0)
+            scaled_w = int(orig_w * self.scale)
+            scaled_h = int(orig_h * self.scale)
+            self.scaled_size = (scaled_w, scaled_h)
+
+            scaled_img = orig_img.resize(
+                (scaled_w, scaled_h), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(scaled_img)
+
+            self.cover_canvas.delete("all")
+            self.cover_canvas.create_image(0, 0, anchor=tk.NW, image=photo)
+            self.cover_canvas.image = photo
+            self.cover_canvas.config(scrollregion=(0, 0, scaled_w, scaled_h))
+
+            # Redraw selection rect if exists
+            if self.embed_region_orig:
+                x1, y1, x2, y2 = self.embed_region_orig
+                cx1 = x1 * self.scale
+                cy1 = y1 * self.scale
+                cx2 = x2 * self.scale
+                cy2 = y2 * self.scale
+                self.rect = self.cover_canvas.create_rectangle(
+                    cx1, cy1, cx2, cy2, outline='red', width=2)
+
+            self.update_capacity_display()
+        except Exception:
+            pass
+
+    def display_image_on_canvas(self, path, canvas, label=None, overlay=False):
+        if not overlay:
+            canvas.delete("all")
+        try:
+            img = Image.open(path)
+            photo = ImageTk.PhotoImage(img)
+            canvas.create_image(0, 0, anchor=tk.NW, image=photo)
+            canvas.image = photo
+            canvas.config(scrollregion=(0, 0, img.width, img.height))
+            if label:
+                canvas.create_text(
+                    10, 10, anchor=tk.NW, text=label, fill="white", font=('Helvetica', 10, 'bold'))
+        except Exception:
+            pass
 
     # -------------------- AUDIO ENCODE TAB --------------------
     def setup_audio_encode_tab(self, parent):
@@ -847,8 +943,12 @@ class StegApp(TkinterDnD.Tk):
     def set_cover_image(self, path):
         self.cover_path.set(path)
         self.cover_drop_zone.update_text(os.path.basename(path))
-        self.display_image_on_canvas(path, self.cover_canvas)
+        self.cover_orig_path = path
+        self.display_cover_on_canvas(self.cover_canvas)
         self.update_capacity_display()
+
+    def display_cover_on_canvas(self, canvas):
+        self.redisplay_cover()
 
     def browse_payload(self):
         path = filedialog.askopenfilename()
@@ -1014,15 +1114,16 @@ class StegApp(TkinterDnD.Tk):
     def get_video_params(self, video_path):
         if shutil.which("ffprobe") is None:
             raise ValueError("FFprobe not found. Please install FFmpeg.")
-        # Get video stream info
+
+        # Get stream info (width, height, fps)
         result = subprocess.run(
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=width,height,r_frame_rate,duration",
+             "-show_entries", "stream=width,height,r_frame_rate",
              "-of", "json", video_path],
             capture_output=True, text=True
         )
         if result.returncode != 0:
-            raise ValueError("Failed to get video info.")
+            raise ValueError("Failed to get video stream info.")
         data = json.loads(result.stdout)
         if not data.get("streams"):
             raise ValueError("No video stream found.")
@@ -1031,9 +1132,19 @@ class StegApp(TkinterDnD.Tk):
         height = int(stream.get("height", 0))
         fps_frac = stream.get("r_frame_rate", "0/1")
         fps = eval(fps_frac) if '/' in fps_frac else float(fps_frac)
-        duration = float(stream.get("duration", 0))
 
-        # Count I-frames
+        # Get overall duration from format level (more reliable for MKV/MP4)
+        result_format = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "json", video_path],
+            capture_output=True, text=True
+        )
+        if result_format.returncode != 0:
+            raise ValueError("Failed to get video duration.")
+        format_data = json.loads(result_format.stdout)
+        duration = float(format_data.get("format", {}).get("duration", 0))
+
+        # Count I-frames (unchanged)
         result_frames = subprocess.run(
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
              "-show_entries", "frame=pict_type", "-of", "json", video_path],
@@ -1242,7 +1353,7 @@ class StegApp(TkinterDnD.Tk):
             self.display_image_on_canvas(
                 stego_path, self.stego_canvas, label="Stego")
             self.display_image_on_canvas(
-                diff_path, self.stego_canvas, label="Diff", overlay=True)
+                diff_path, self.stego_canvas, label="Difference Map", overlay=False)
             messagebox.showinfo(
                 "Success", f"Stego image saved as: {stego_path}")
         except ValueError as e:
@@ -1351,7 +1462,6 @@ class StegApp(TkinterDnD.Tk):
         if not stego_path:
             return
 
-        # draw in decode tab for quick preview
         self.audio_decode_stego_path.set(stego_path)
         self._draw_waveform(self.audio_stego_canvas_dec,
                             stego_path, title="Stego (Decode)")
@@ -1695,6 +1805,11 @@ class StegApp(TkinterDnD.Tk):
         self.num_lsbs.set(1)
         self.payload_type.set("file")
         self.payload_text.set("")
+        self.cover_orig_path = None
+        self.orig_size = None
+        self.scale = 1.0
+        self.scaled_size = (0, 0)
+        self.embed_region_orig = None
         self.cover_canvas.delete("all")
         self.stego_canvas.delete("all")
         self.capacity_label.config(text="Capacity: N/A")
@@ -2281,62 +2396,72 @@ class StegApp(TkinterDnD.Tk):
         return diff_path
 
     # -------------------- IMAGE DISPLAY / SELECTION --------------------
-    def display_image_on_canvas(self, path, canvas, label=None, overlay=False):
-        if not overlay:
-            canvas.delete("all")
-        try:
-            img = Image.open(path)
-            img.thumbnail((450, 450))
-            photo = ImageTk.PhotoImage(img)
-            canvas.create_image(0, 0, anchor=tk.NW, image=photo)
-            canvas.image = photo
-            if label:
-                canvas.create_text(
-                    10, 10, anchor=tk.NW, text=label, fill="white", font=('Helvetica', 10, 'bold'))
-        except Exception:
-            pass
-
     def setup_canvas_bindings(self):
         self.cover_canvas.bind("<ButtonPress-1>", self.on_press)
         self.cover_canvas.bind("<B1-Motion>", self.on_drag)
         self.cover_canvas.bind("<ButtonRelease-1>", self.on_release)
 
     def on_press(self, event):
-        self.start_x = self.cover_canvas.canvasx(event.x)
-        self.start_y = self.cover_canvas.canvasy(event.y)
+        scaled_w, scaled_h = self.scaled_size
+        if (event.x < 0 or event.y < 0 or
+                event.x > scaled_w or event.y > scaled_h):
+            return "break"  # Ignore drags outside image
+
+        self.start_canvas_x = event.x
+        self.start_canvas_y = event.y
         if hasattr(self, 'rect'):
             self.cover_canvas.delete(self.rect)
         self.rect = self.cover_canvas.create_rectangle(
-            self.start_x, self.start_y, self.start_x, self.start_y, outline='red', width=2)
+            self.start_canvas_x, self.start_canvas_y, self.start_canvas_x, self.start_canvas_y, outline='red', width=2)
+        return None
 
     def on_drag(self, event):
-        cur_x = self.cover_canvas.canvasx(event.x)
-        cur_y = self.cover_canvas.canvasy(event.y)
+        if not hasattr(self, 'start_canvas_x'):
+            return
+        scaled_w, scaled_h = self.scaled_size
+        cur_x = max(0, min(scaled_w, event.x))
+        cur_y = max(0, min(scaled_h, event.y))
         self.cover_canvas.coords(
-            self.rect, self.start_x, self.start_y, cur_x, cur_y)
+            self.rect, self.start_canvas_x, self.start_canvas_y, cur_x, cur_y)
 
     def on_release(self, event):
+        if not hasattr(self, 'start_canvas_x'):
+            return
+        scaled_w, scaled_h = self.scaled_size
+        orig_w, orig_h = self.orig_size
+        cur_x = max(0, min(scaled_w, event.x))
+        cur_y = max(0, min(scaled_h, event.y))
+
+        # convert canvas (possibly scaled) coords back to original image coords
+        ox1 = self.start_canvas_x / self.scale
+        oy1 = self.start_canvas_y / self.scale
+        ox2 = cur_x / self.scale
+        oy2 = cur_y / self.scale
+
+        # use rounding and cast to int to avoid floats being used in ranges or image indexing
+        x1 = int(round(max(0, min(orig_w, min(ox1, ox2)))))
+        y1 = int(round(max(0, min(orig_h, min(oy1, oy2)))))
+        x2 = int(round(max(0, min(orig_w, max(ox1, ox2)))))
+        y2 = int(round(max(0, min(orig_h, max(oy1, oy2)))))
+
+        if x1 >= x2 or y1 >= y2:
+            self.embed_region_orig = None
+            if hasattr(self, 'rect'):
+                self.cover_canvas.delete(self.rect)
+                del self.rect
+        else:
+            self.embed_region_orig = (x1, y1, x2, y2)
+
         self.update_capacity_display()
 
     def get_embed_region_in_original(self):
-        if not hasattr(self, 'rect'):
-            return None
-        x1, y1, x2, y2 = self.cover_canvas.coords(self.rect)
-        if x1 == x2 or y1 == y2:
-            return None
-        # Scale back to original image size
-        orig_img = Image.open(self.cover_path.get())
-        orig_w, orig_h = orig_img.size
-        canv_w, canv_h = 450, 450  # thumbnail size
-        scale_x = orig_w / canv_w
-        scale_y = orig_h / canv_h
-        # Convert to integers to avoid float issues in range()
-        return (int(min(x1, x2) * scale_x), int(min(y1, y2) * scale_y), int(max(x1, x2) * scale_x), int(max(y1, y2) * scale_y))
+        return self.embed_region_orig
 
     def clear_selection(self):
         if hasattr(self, 'rect'):
             self.cover_canvas.delete(self.rect)
-            del self.rect
+            self.rect = None
+        self.embed_region_orig = None
         self.update_capacity_display()
 
      # -------------------- ANALYSIS TAB --------------------
@@ -2893,7 +3018,7 @@ class StegApp(TkinterDnD.Tk):
 
     def _render_histograms(self, arr):
         """
-        Quick RGB histogram render (256x120 per channel stacked).
+        Quick RGB histogram histogram render (256x120 per channel stacked).
         """
         H, W = 120, 256
         canvas = Image.new('RGB', (W, H*3), (240, 240, 240))
@@ -2915,7 +3040,7 @@ class StegApp(TkinterDnD.Tk):
 
     def _render_diff_amplified(self, cover_img, stego_img, factor=16):
         """
-        |stego - cover| * factor, clipped, to reveal subtle embedding patterns.
+        |stego - cover| * factor, clipped, to reveal subtle subtle embedding patterns.
         """
         if cover_img.size != stego_img.size:
             # fallback: resize cover to stego just for visualization
@@ -2926,8 +3051,8 @@ class StegApp(TkinterDnD.Tk):
         return Image.fromarray(d, mode='RGB')
 
     def setup_audio_analysis_tab(self, parent):
-        container = self.create_scrolled_frame(parent)   # instead of tk.Frame
-        pad = tk.Frame(container, bg='#f5f5f5')
+        inner_frame = self.create_scrolled_frame(parent)
+        pad = tk.Frame(inner_frame, bg='#f5f5f5')
         pad.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
         picks = tk.LabelFrame(
@@ -3273,7 +3398,6 @@ class StegApp(TkinterDnD.Tk):
             lines.append("------------------------")
             lines.append(
                 f"File: {os.path.basename(path)}  |  {sr} Hz, {params.nchannels} ch, {8*params.sampwidth}-bit, {dur:.2f}s")
-            lines.append(f"Analyzed bit-plane: {k}  (UI value {k+1})")
             lines.append(
                 f"Chi-square LSB p-value (overall): {chi_p_overall:.4f}")
             for c in range(C):
@@ -3298,7 +3422,7 @@ class StegApp(TkinterDnD.Tk):
         """
         Heuristic: higher = more 'stego-ish'.
         - want chi_p small (LSB distribution deviates from 50/50) -> use (1 - chi_p)
-        - want neighbor correlation small (more noise)          -> use (1 - corr)
+        - want corr small (more noise)          -> use (1 - corr)
         - want ones-ratio near 0.5 -> use bell around 0.5
         - want variance across blocks high                      -> use var_mean
         Weights are gentle; tweak if you like.
@@ -3489,8 +3613,7 @@ class StegApp(TkinterDnD.Tk):
         w = int(max(64, var_series.size))
         # stretch to width
         xs = np.linspace(0, var_series.size-1, w).astype(int)
-        v = var_series[xs]
-        vimg = (v*255.0).clip(0, 255).astype(np.uint8)
+        vimg = (var_series[xs]*255.0).clip(0, 255).astype(np.uint8)
         img = Image.new('L', (w, height), 255)
         px = img.load()
         for x in range(w):

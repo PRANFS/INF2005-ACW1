@@ -1124,6 +1124,7 @@ class StegApp(TkinterDnD.Tk):
         )
         if result.returncode != 0:
             raise ValueError("Failed to get video stream info.")
+            raise ValueError("Failed to get video stream info.")
         data = json.loads(result.stdout)
         if not data.get("streams"):
             raise ValueError("No video stream found.")
